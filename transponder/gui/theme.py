@@ -1,4 +1,4 @@
-"""主题系统: 黑/白双主题 QSS+调色板, 下拉/SpinBox 箭头图标, 滑动开关, 浮动通知(Toast)."""
+"""主题系统: 黑/白双主题 + 圆角/直角风格, QSS+调色板, 箭头图标, 滑动开关, 浮动通知(Toast)."""
 
 from __future__ import annotations
 
@@ -7,7 +7,9 @@ import time
 
 from PySide6.QtCore import QPropertyAnimation, QRectF, QPointF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPalette
-from PySide6.QtWidgets import QApplication, QGraphicsOpacityEffect, QLabel, QWidget
+from PySide6.QtWidgets import (
+    QApplication, QGraphicsOpacityEffect, QLabel, QSpinBox, QWidget, QStyle,
+)
 
 ASSET_DIR = os.path.join(os.path.dirname(__file__), "assets")
 
@@ -42,16 +44,17 @@ def _url(fname: str) -> str:
     return ASSET_DIR.replace("\\", "/") + "/" + fname
 
 
-QSS_URL_PREFIX = ""  # 兼容占位 (不再使用)
-
-
-def build_qss(t: dict) -> str:
+def build_qss(t: dict, rounded: bool = True) -> str:
+    """rounded=False 时使用直角风格 (与黑白主题独立的风格开关)."""
+    rc = "10px" if rounded else "2px"    # 卡片圆角
+    ri = "6px" if rounded else "2px"     # 输入控件圆角
+    rb = "6px" if rounded else "2px"     # 按钮圆角
     return f"""
 * {{ font-family: "Segoe UI", "Microsoft YaHei", sans-serif; font-size: 13px;
      color: {t['text']}; }}
 QMainWindow, QWidget#root {{ background: {t['window']}; }}
 QGroupBox {{
-    background: {t['card']}; border: 1px solid {t['border']}; border-radius: 10px;
+    background: {t['card']}; border: 1px solid {t['border']}; border-radius: {rc};
     margin-top: 14px; padding: 12px 10px 10px 10px; font-weight: 600;
 }}
 QGroupBox::title {{ subcontrol-origin: margin; left: 14px; padding: 0 6px;
@@ -62,29 +65,33 @@ QLabel#stat {{ color: {t['success']}; font-size: 12px; font-weight: 600; }}
 QLabel#title {{ font-size: 18px; font-weight: 700; color: {t['text']}; }}
 
 QComboBox, QSpinBox, QLineEdit, QListWidget, QTextEdit {{
-    background: {t['card2']}; border: 1px solid {t['border2']}; border-radius: 6px;
+    background: {t['card2']}; border: 1px solid {t['border2']}; border-radius: {ri};
     padding: 4px 8px; selection-background-color: {t['sel_bg']};
 }}
 QComboBox:focus, QSpinBox:focus, QLineEdit:focus {{ border: 1px solid {t['accent']}; }}
 QComboBox:disabled, QSpinBox:disabled, QLineEdit:disabled {{
     color: {t['disabled_fg']}; background: {t['disabled_bg']}; border-color: {t['border']}; }}
+/* 可编辑下拉: 内嵌行编辑去掉自带边框, 避免与外框圆角叠加出现直角 */
+QComboBox QLineEdit {{ background: transparent; border: none; padding: 0 2px; }}
 QComboBox::drop-down {{ border: none; width: 26px; subcontrol-origin: padding;
     subcontrol-position: top right; }}
 QComboBox::down-arrow {{ image: url({_url(f"arrow-down-{t['name']}.png")}); width: 12px; height: 12px; }}
 QComboBox QAbstractItemView {{
-    background: {t['card']}; border: 1px solid {t['border2']}; border-radius: 6px;
+    background: {t['card']}; border: 1px solid {t['border2']}; border-radius: {ri};
     outline: 0; padding: 4px; selection-background-color: {t['sel_bg']};
     selection-color: #FFFFFF; }}
+/* SpinBox 调节按钮: 不设悬停背景, 避免覆盖输入框圆角边框 */
 QSpinBox::up-button, QSpinBox::down-button {{
     subcontrol-origin: border; border: none; background: transparent; width: 18px; }}
 QSpinBox::up-button {{ subcontrol-position: top right; border-bottom: none; }}
 QSpinBox::down-button {{ subcontrol-position: bottom right; border-top: none; }}
-QSpinBox::up-button:hover, QSpinBox::down-button:hover {{ background: {t['border']}; }}
 QSpinBox::up-arrow {{ image: url({_url(f"spin-up-{t['name']}.png")}); width: 10px; height: 8px; }}
 QSpinBox::down-arrow {{ image: url({_url(f"spin-down-{t['name']}.png")}); width: 10px; height: 8px; }}
+/* 最小值占位提示 (清空输入=自动/默认), 用淡色斜体显示 */
+QSpinBox[placeholder="true"] {{ color: {t['text_dim']}; font-style: italic; }}
 
 QPushButton {{
-    background: {t['card2']}; border: 1px solid {t['border2']}; border-radius: 6px;
+    background: {t['card2']}; border: 1px solid {t['border2']}; border-radius: {rb};
     padding: 6px 16px; font-weight: 600; color: {t['text']};
 }}
 QPushButton:hover {{ background: {t['border']}; }}
@@ -102,10 +109,23 @@ QPushButton#danger {{
 }}
 QPushButton#danger:disabled {{ background: {t['disabled_bg']};
     color: {t['disabled_fg']}; }}
+/* 数据源 打开(绿)/关闭(红) 状态按钮 */
+QPushButton#btn_open {{
+    background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #58C98A, stop:1 {t['success']});
+    border: none; color: #0E2A1D; font-weight: 700;
+}}
+QPushButton#btn_open:hover {{ background: #58C98A; }}
+QPushButton#btn_open:disabled {{ background: {t['disabled_bg']}; color: {t['disabled_fg']}; }}
+QPushButton#btn_close {{
+    background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #F06479, stop:1 {t['danger']});
+    border: none; color: white; font-weight: 700;
+}}
+QPushButton#btn_close:hover {{ background: #F06479; }}
+QPushButton#btn_close:disabled {{ background: {t['disabled_bg']}; color: {t['disabled_fg']}; }}
 
 QTextEdit, QListWidget {{
     background: {t['view_bg']}; font-family: "Consolas", "Courier New", monospace;
-    font-size: 12px; border: 1px solid {t['border']}; border-radius: 8px;
+    font-size: 12px; border: 1px solid {t['border']}; border-radius: {ri};
 }}
 QSlider::groove:horizontal {{ height: 6px; border-radius: 3px; background: {t['card2']}; }}
 QSlider::sub-page:horizontal {{ border-radius: 3px; background: {t['accent']}; }}
@@ -131,7 +151,8 @@ QRadioButton::indicator {{
 QRadioButton::indicator:checked {{ background: {t['accent']}; border-color: {t['accent']}; }}
 QListWidget::item {{ padding: 4px 8px; border-radius: 4px; color: {t['text']}; }}
 QListWidget::item:selected {{ background: {t['sel_bg']}; color: white; }}
-QSplitter::handle {{ background: {t['border']}; }}
+/* 分隔条透明, 只留间隙 (圆角模式下不顶出卡片边缘) */
+QSplitter::handle {{ background: transparent; }}
 QScrollBar:vertical {{ background: transparent; width: 10px; }}
 QScrollBar::handle:vertical {{ background: {t['border2']}; border-radius: 5px; min-height: 30px; }}
 QScrollBar::handle:vertical:hover {{ background: {t['text_dim']}; }}
@@ -159,13 +180,27 @@ def _palette(t: dict) -> QPalette:
     return pal
 
 
-def apply_theme(theme: str = "dark") -> dict:
-    """应用主题到整个应用, 返回主题令牌表."""
+# 当前风格状态 (滑动开关/Toast 取色用)
+_current = {"theme": "dark", "rounded": True}
+
+
+def apply_theme(theme: str = "dark", rounded: bool = True) -> dict:
+    """应用主题(黑/白)与风格(圆角/直角)到整个应用, 返回主题令牌表."""
+    _current["theme"] = theme
+    _current["rounded"] = rounded
     t = DARK if theme == "dark" else LIGHT
     app = QApplication.instance()
-    app.setStyleSheet(build_qss(t))
+    app.setStyleSheet(build_qss(t, rounded))
     app.setPalette(_palette(t))
     return t
+
+
+def current_tokens() -> dict:
+    return DARK if _current["theme"] == "dark" else LIGHT
+
+
+def current_theme() -> str:
+    return _current["theme"]
 
 
 class SwitchToggle(QWidget):
@@ -194,12 +229,10 @@ class SwitchToggle(QWidget):
 
     def sizeHint(self):
         w = 46 + (self.fontMetrics().horizontalAdvance(self._text) + 8 if self._text else 0)
-        from PySide6.QtCore import QSize
         return QSize(w, 24)
 
     def paintEvent(self, ev) -> None:
-        t = {"dark": DARK, "light": LIGHT}.get(
-            "light" if QApplication.instance().palette().window().color().value() > 128 else "dark")
+        t = current_tokens()
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         h = 20
@@ -216,13 +249,48 @@ class SwitchToggle(QWidget):
             knob_x = track.left() + 3
         p.setPen(Qt.NoPen)
         p.drawRoundedRect(track, h / 2, h / 2)
-        p.setBrush(QColor("#E8EAF0") if t is DARK else QColor("#FFFFFF"))
+        p.setBrush(QColor("#E8EAF0") if current_theme() == "dark" else QColor("#FFFFFF"))
         p.drawEllipse(QPointF(knob_x + knob_r / 2, track.center().y()), knob_r / 2, knob_r / 2)
         if self._text:
             p.setPen(QColor(t["text"]))
             p.drawText(QRectF(track.right() + 8, 0, self.width() - track.right() - 8,
                               self.height()), Qt.AlignVCenter, self._text)
         p.end()
+
+
+class PlaceholderSpinBox(QSpinBox):
+    """占位式数字输入框: 值为最小值时以淡色显示提示文字(如"自动/默认");
+
+    用户清空输入(失焦或按键)后自动回到最小值, 即回到占位状态.
+    """
+
+    def __init__(self, placeholder: str = "自动", parent=None):
+        super().__init__(parent)
+        self._placeholder = placeholder
+        self.setSpecialValueText(placeholder)
+        self.valueChanged.connect(self._sync_placeholder)
+        self._sync_placeholder(self.value())
+
+    def _sync_placeholder(self, _v: int) -> None:
+        on = self.value() == self.minimum()
+        if self.property("placeholder") != on:
+            self.setProperty("placeholder", on)
+            self.style().unpolish(self)
+            self.style().polish(self)
+
+    def _maybe_reset(self) -> None:
+        txt = self.text().strip()
+        if not txt or txt == self._placeholder:
+            self.setValue(self.minimum())  # 触发 valueChanged -> 占位样式
+
+    def focusOutEvent(self, ev) -> None:
+        self._maybe_reset()
+        super().focusOutEvent(ev)
+
+    def keyPressEvent(self, ev) -> None:
+        super().keyPressEvent(ev)
+        if ev.key() in (Qt.Key_Delete, Qt.Key_Backspace):
+            self._maybe_reset()
 
 
 class Toast(QLabel):
@@ -234,8 +302,7 @@ class Toast(QLabel):
 
     def __init__(self, parent: QWidget, text: str, kind: str = "info"):
         super().__init__(parent)
-        t = {"dark": DARK, "light": LIGHT}.get(
-            "light" if QApplication.instance().palette().window().color().value() > 128 else "dark")
+        t = current_tokens()
         color = t.get(self._kind_color.get(kind) or "accent", t["accent"])
         self.setText(text)
         self.setWordWrap(True)

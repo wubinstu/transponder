@@ -25,7 +25,7 @@ from ..core import (
     scan_local_addresses, scan_broadcast_addresses, addr_in_use,
     is_valid_multicast, udp_bind_ok,
 )
-from .theme import SwitchToggle, toast
+from .theme import SwitchToggle, toast, PlaceholderSpinBox
 
 
 def _row(label: str, *fields: QWidget, stretch_last=True) -> QWidget:
@@ -138,16 +138,27 @@ class FileForm(QWidget):
         btn.setFixedWidth(56)
         btn.clicked.connect(self._browse)
         lay.addWidget(_row("文件:", _pair(self.path, btn)))
-        # 三滑块叠加限速: B + 1024*KB + 1024*1024*MB 字节/秒
+        # 限速/追加 同一行: 发送模式限速常亮可调, 接收模式追加常亮
         self.unlimited = SwitchToggle("不限速")
         self.unlimited.setChecked(True)
-        lay.addWidget(_row("限速:", self.unlimited))
+        self.append = SwitchToggle("追加写入")
+        opts = QHBoxLayout()
+        opts.addWidget(self.unlimited)
+        opts.addStretch(1)
+        opts.addWidget(self.append)
+        lay.addLayout(opts)
+        # 三滑块叠加限速: B + 1024*KB + 1024*1024*MB 字节/秒 (不限速时禁用)
         self.sl_b = self._slider()
         self.sl_kb = self._slider()
         self.sl_mb = self._slider()
-        for slider, unit in [(self.sl_b, "B"), (self.sl_kb, "KB"), (self.sl_mb, "MB")]:
-            lbl = QLabel("0")
+        self.lbl_b = QLabel("0 B")
+        self.lbl_kb = QLabel("0 KB")
+        self.lbl_mb = QLabel("0 MB")
+        for lbl in (self.lbl_b, self.lbl_kb, self.lbl_mb):
             lbl.setMinimumWidth(64)
+        for slider, lbl, unit in [(self.sl_b, self.lbl_b, "B"),
+                                  (self.sl_kb, self.lbl_kb, "KB"),
+                                  (self.sl_mb, self.lbl_mb, "MB")]:
             slider.valueChanged.connect(lambda v, l=lbl, u=unit: l.setText(f"{v} {u}"))
             row = _row("", slider, lbl)
             row.layout().itemAt(0).widget().deleteLater()  # 去掉占位label
@@ -157,10 +168,8 @@ class FileForm(QWidget):
         lay.addWidget(self.rate_total, alignment=Qt.AlignRight)
         for s in (self.sl_b, self.sl_kb, self.sl_mb):
             s.valueChanged.connect(self._update_total)
-        self.unlimited.toggled.connect(lambda on: self._update_total())
-        self.append = SwitchToggle("追加写入 (不开启则覆盖)")
-        lay.addWidget(self.append)
-        self.rb_send.toggled.connect(self._mode_changed)
+        self.unlimited.toggled.connect(lambda on: self._mode_changed())
+        self.rb_send.toggled.connect(lambda _: self._mode_changed())
         self._mode_changed()
         lay.addStretch(1)
         # 限速变化回调 (面板连接到 FileSendSource.set_rate 实现动态限速)
@@ -173,7 +182,7 @@ class FileForm(QWidget):
     def _slider() -> QSlider:
         s = QSlider(Qt.Horizontal)
         s.setRange(0, 1024)
-        s.setMinimumWidth(240)  # 加长滑块, 降低鼠标滑动灵敏度
+        s.setMinimumWidth(280)  # 长滑块: 对齐父级模块宽度, 降低灵敏度
         s.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         return s
 
@@ -184,8 +193,11 @@ class FileForm(QWidget):
 
     def _mode_changed(self):
         sending = self.rb_send.isChecked()
-        for w in (self.unlimited, self.sl_b, self.sl_kb, self.sl_mb):
-            w.setEnabled(sending)
+        unlimited = self.unlimited.isChecked()
+        # 发送模式: 限速开关常亮可开/关, 追加灰; 接收模式: 限速整体灰, 追加常亮
+        self.unlimited.setEnabled(sending)
+        for s in (self.sl_b, self.sl_kb, self.sl_mb):
+            s.setEnabled(sending and not unlimited)
         self.append.setEnabled(not sending)
         self._update_total()
 
@@ -204,6 +216,10 @@ class FileForm(QWidget):
     def rate_widgets(self) -> list[QWidget]:
         """限速相关控件 (打开数据源后仍保持可调)."""
         return [self.unlimited, self.sl_b, self.sl_kb, self.sl_mb]
+
+    def refresh_widget_states(self) -> None:
+        """供面板在解锁/豁免后回调, 重新应用控件间的联动可用状态."""
+        self._mode_changed()
 
     def _browse(self):
         if self.rb_send.isChecked():
@@ -253,15 +269,23 @@ class TcpClientForm(QWidget):
         lay.addWidget(self.local_auto)
         self.local_host = QComboBox(); self.local_host.setEditable(True)
         self.local_host.addItems(scan_local_addresses())
-        self.local_port = QSpinBox(); self.local_port.setRange(0, 65535)
-        self.local_port.setSpecialValueText("自动")
+        self.local_port = PlaceholderSpinBox("自动"); self.local_port.setRange(0, 65535)
         lay.addWidget(_row("本地地址:", self.local_host))
         lay.addWidget(_row("本地端口:", self.local_port))
-        for w in (self.local_host, self.local_port):
-            w.setEnabled(False)
-        self.local_auto.toggled.connect(lambda on: [
-            self.local_host.setEnabled(not on), self.local_port.setEnabled(not on)])
+        self.local_auto.toggled.connect(lambda on: self._sync_local_states())
+        self._sync_local_states()
         lay.addStretch(1)
+
+    def _sync_local_states(self) -> None:
+        """按"自动分配"开关同步本地地址/端口可用性 (打开/关闭数据源后也会调用)."""
+        auto = self.local_auto.isChecked()
+        self.local_host.setEnabled(not auto)
+        self.local_port.setEnabled(not auto)
+
+    def sync_states(self) -> None:
+        """面板解锁表单时回调: 恢复自动分配模式的联动状态."""
+        self.local_auto.setEnabled(True)
+        self._sync_local_states()
 
     def build(self) -> TcpClientSource:
         return TcpClientSource(
@@ -271,11 +295,17 @@ class TcpClientForm(QWidget):
         )
 
     def on_opened(self, src: TcpClientSource) -> None:
-        # 自动分配时回显实际本地端口
+        # 自动分配时回显实际本地端口 (仅显示, 关闭后恢复自动)
         if self.local_auto.isChecked() and src.local_port:
-            self.local_port.setSpecialValueText("")
+            self._shown_port = src.local_port
             self.local_port.setValue(src.local_port)
             self.local_auto.setEnabled(False)  # 已连接, 不能再切换
+
+    def sync_states_after_close(self) -> None:
+        if getattr(self, "_shown_port", None):
+            self.local_port.setValue(0)  # 恢复"自动"占位, 避免下次误绑固定端口
+            self._shown_port = None
+        self.sync_states()
 
     def fill(self, kv: dict):
         if "host" in kv:
@@ -302,17 +332,21 @@ class TcpServerForm(QWidget):
         self.host.addItems(scan_local_addresses())
         self.port = QSpinBox(); self.port.setRange(1, 65535); self.port.setValue(9000)
         self.check = QPushButton("检测占用")
-        self.check.setFixedWidth(80)
+        self.check.setMinimumWidth(96)
         self.check.clicked.connect(self._check)
         lay.addWidget(_row("绑定地址:", _pair(self.host, self.check)))
         lay.addWidget(_row("绑定端口:", self.port))
-        self.backlog = QSpinBox(); self.backlog.setRange(0, 128)
-        self.backlog.setSpecialValueText("默认")
+        self.backlog = PlaceholderSpinBox("默认"); self.backlog.setRange(0, 128)
         lay.addWidget(_row("监听队列:", self.backlog))
         hint = QLabel("不选主要对端时: 发送给全部客户端并接收全部; 主要对端断开自动恢复全部模式")
         hint.setObjectName("hint"); hint.setWordWrap(True)
         lay.addWidget(hint)
         lay.addStretch(1)
+
+    def on_opened(self, src: TcpServerSource) -> None:
+        # "默认"时打开后回显实际使用的监听队列大小
+        if self.backlog.value() == 0:
+            self.backlog.setValue(src.backlog or 5)
 
     def _check(self):
         busy = addr_in_use(self.host.currentText().strip(), self.port.value())
@@ -343,18 +377,15 @@ class UdpForm(QWidget):
         lay.setSpacing(7)
         self.bind_host = QComboBox(); self.bind_host.setEditable(True)
         self.bind_host.addItems(scan_local_addresses())
-        self.bind_port = QSpinBox(); self.bind_port.setRange(0, 65535)
-        self.bind_port.setSpecialValueText("自动分配")
-        self.bind_port.setValue(0)
+        self.bind_port = PlaceholderSpinBox("自动分配"); self.bind_port.setRange(0, 65535)
         self.check = QPushButton("检测占用")
-        self.check.setFixedWidth(80)
+        self.check.setMinimumWidth(96)
         self.check.clicked.connect(self._check)
         lay.addWidget(_row("本地地址:", _pair(self.bind_host, self.check)))
         lay.addWidget(_row("本地端口:", self.bind_port))
         self.peer_host = QLineEdit()
         self.peer_host.setPlaceholderText("留空 = 收到第一帧数据后自动锁定对端")
-        self.peer_port = QSpinBox(); self.peer_port.setRange(0, 65535)
-        self.peer_port.setSpecialValueText("自动")
+        self.peer_port = PlaceholderSpinBox("自动"); self.peer_port.setRange(0, 65535)
         lay.addWidget(_row("对端地址:", self.peer_host))
         lay.addWidget(_row("对端端口:", self.peer_port))
         hint = QLabel("指定对端后仅与该对端收发; 不指定则锁定第一个发来数据的地址")
@@ -385,8 +416,7 @@ class UdpForm(QWidget):
         )
 
     def on_opened(self, src: UdpUnicastSource) -> None:
-        if src.local_port:  # 自动分配时回显实际端口
-            self.bind_port.setSpecialValueText("")
+        if src.local_port and self.bind_port.value() == 0:  # 自动分配时回显实际端口
             self.bind_port.setValue(src.local_port)
 
     def fill(self, kv: dict):
@@ -411,7 +441,7 @@ class MulticastForm(QWidget):
         lay.setSpacing(7)
         self.group = QLineEdit("239.1.1.1")
         self.check = QPushButton("检测")
-        self.check.setFixedWidth(56)
+        self.check.setMinimumWidth(72)
         self.check.clicked.connect(self._check)
         lay.addWidget(_row("组播地址:", _pair(self.group, self.check)))
         hint = QLabel("有效组播地址范围: 224.0.0.0/4 (224.0.0.0 ~ 239.255.255.255)")
@@ -468,8 +498,7 @@ class BroadcastForm(QWidget):
         self.addr = QComboBox(); self.addr.setEditable(True)
         self.addr.addItems(scan_broadcast_addresses())
         self.port = QSpinBox(); self.port.setRange(1, 65535); self.port.setValue(5000)
-        self.local_port = QSpinBox(); self.local_port.setRange(0, 65535)
-        self.local_port.setSpecialValueText("自动分配")
+        self.local_port = PlaceholderSpinBox("自动分配"); self.local_port.setRange(0, 65535)
         lay.addWidget(_row("广播地址:", self.addr))
         lay.addWidget(_row("广播端口:", self.port))
         lay.addWidget(_row("本地端口:", self.local_port))
@@ -483,8 +512,7 @@ class BroadcastForm(QWidget):
                                local_port=self.local_port.value())
 
     def on_opened(self, src: BroadcastSource) -> None:
-        if src.local_port:
-            self.local_port.setSpecialValueText("")
+        if src.local_port and self.local_port.value() == 0:
             self.local_port.setValue(src.local_port)
 
     def fill(self, kv: dict):

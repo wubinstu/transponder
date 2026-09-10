@@ -52,6 +52,7 @@ class PreviewPane(QGroupBox):
         lay.addLayout(head)
         self.view = QTextEdit()
         self.view.setReadOnly(True)
+        self.view.setAcceptRichText(False)  # 纯文本显示, 原样呈现 (避免 <>& 被当富文本)
         self.view.setFont(QFont("Consolas, Courier New", 9))
         lay.addWidget(self.view, 1)
         # 分侧落地记录配置 (basedir 共用, 放在主窗口控制条)
@@ -86,12 +87,17 @@ class PreviewPane(QGroupBox):
         if not self.show_sw.isChecked() or self.paused:
             return
         if self.hex_rb.isChecked():
+            # HEX 严格按原始字节显示 (0x0A 显示为 "0A", 不产生真实换行)
             text = " ".join(f"{b:02X}" for b in data[:256])
             if len(data) > 256:
                 text += f"  …(共{len(data)}字节)"
         else:
-            text = data[:256].decode("utf-8", errors="replace")
-        self.view.append(text)
+            # TXT 模式才"翻译" (控制字符等按文本呈现)
+            text = data[:256].decode("utf-8", errors="replace").rstrip("\n")
+        self.view.moveCursor(QTextCursor.End)
+        self.view.insertPlainText(text + "\n")
+        sb = self.view.verticalScrollBar()
+        sb.setValue(sb.maximum())
         doc = self.view.document()
         if doc.blockCount() > PREVIEW_LIMIT:
             cur = QTextCursor(doc)
@@ -99,6 +105,15 @@ class PreviewPane(QGroupBox):
             cur.movePosition(QTextCursor.Down, QTextCursor.KeepAnchor,
                              doc.blockCount() - PREVIEW_LIMIT)
             cur.removeSelectedText()
+
+    def record_widgets(self) -> list:
+        """落地记录配置控件 (转发开始后锁定)."""
+        return [self.rec_sw, self.rec_fmt, self.rec_ts]
+
+    def set_record_editable(self, on: bool):
+        for w in self.record_widgets():
+            w.setEnabled(on)
+        self.rec_ts.setEnabled(on and self.rec_fmt.currentText() == "TXT")
 
 
 class MainWindow(QMainWindow):
@@ -116,6 +131,7 @@ class MainWindow(QMainWindow):
         self.bridge: Optional[Bridge] = None
         self.session: Optional[LogSession] = None
         self._theme = "dark"
+        self._rounded = True
         self._uiq: "queue.Queue[tuple]" = queue.Queue()
         self._pump = QTimer(self)
         self._pump.timeout.connect(self._drain_uiq)
@@ -128,12 +144,16 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(14, 10, 14, 10)
         root.setSpacing(10)
 
-        # 标题栏: 标题 + 主题切换
+        # 标题栏: 标题 + 圆角风格 + 主题切换
         head = QHBoxLayout()
         title = QLabel("MW数据转发器")
         title.setObjectName("title")
         head.addWidget(title)
         head.addStretch(1)
+        self.style_btn = QPushButton("圆角")
+        self.style_btn.setFixedWidth(88)
+        self.style_btn.clicked.connect(self._toggle_style)
+        head.addWidget(self.style_btn)
         self.theme_btn = QPushButton("🌙 浅色主题")
         self.theme_btn.setFixedWidth(110)
         self.theme_btn.clicked.connect(self._toggle_theme)
@@ -146,6 +166,8 @@ class MainWindow(QMainWindow):
         self.panel_w = SourcePanel("数据源 W")
         splitter.addWidget(self.panel_m)
         splitter.addWidget(self.panel_w)
+        splitter.setHandleWidth(14)
+        splitter.setChildrenCollapsible(False)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 1)
         root.addWidget(splitter, 3)
@@ -183,6 +205,8 @@ class MainWindow(QMainWindow):
         self.pane_w = PreviewPane("W 数据预览")
         prev.addWidget(self.pane_m)
         prev.addWidget(self.pane_w)
+        prev.setHandleWidth(14)
+        prev.setChildrenCollapsible(False)
         prev.setStretchFactor(0, 1)
         prev.setStretchFactor(1, 1)
         root.addWidget(prev, 2)
@@ -206,11 +230,16 @@ class MainWindow(QMainWindow):
         if prefill:
             self._apply_prefill(prefill)
 
-    # ---- 主题 -----------------------------------------------------------
+    # ---- 主题/风格 -------------------------------------------------------
     def _toggle_theme(self):
         self._theme = "light" if self._theme == "dark" else "dark"
-        apply_theme(self._theme)
+        apply_theme(self._theme, self._rounded)
         self.theme_btn.setText("🌙 浅色主题" if self._theme == "dark" else "☀ 深色主题")
+
+    def _toggle_style(self):
+        self._rounded = not self._rounded
+        apply_theme(self._theme, self._rounded)
+        self.style_btn.setText("圆角" if self._rounded else "直角")
 
     # ---- 参数预填充 (命令行带参启动GUI) --------------------------------
     def _apply_prefill(self, pf: dict):
@@ -288,17 +317,35 @@ class MainWindow(QMainWindow):
         self.stop_btn.setEnabled(True)
         self.panel_m.set_editable(False)
         self.panel_w.set_editable(False)
+        # 落地记录配置锁定 (停止转发后才能修改)
+        self.pane_m.set_record_editable(False)
+        self.pane_w.set_record_editable(False)
+        self.log_dir.setEnabled(False)
+        self.browse_btn.setEnabled(False)
         self.stat_timer.start(500)
 
     def _stop(self):
         if self.bridge:
             self.bridge.stop()
         self.stat_timer.stop()
-        self._update_stats()
+        # 停止后速率清零显示 (保留累计总量), 避免冻结在最后一帧
+        if self.bridge:
+            tm, _ = self.bridge.stats_m2w.snapshot()
+            tw, _ = self.bridge.stats_w2m.snapshot()
+            self.panel_m.update_stats(tm, 0)
+            self.panel_w.update_stats(tw, 0)
+        # 立刻释放落地记录文件句柄 (不再占用日志文件与时间戳文件夹)
+        if self.session:
+            self.session.close()
+            self.session = None
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self.panel_m.set_editable(True)
         self.panel_w.set_editable(True)
+        self.pane_m.set_record_editable(True)
+        self.pane_w.set_record_editable(True)
+        self.log_dir.setEnabled(True)
+        self.browse_btn.setEnabled(True)
 
     def closeEvent(self, ev):
         self._stop()

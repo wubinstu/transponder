@@ -23,6 +23,11 @@ def _fmt_bytes(n: float) -> str:
     return f"{n:.1f} TB"
 
 
+def _repolish(w: QWidget) -> None:
+    w.style().unpolish(w)
+    w.style().polish(w)
+
+
 class PanelSignals(QObject):
     """把数据源工作线程的回调转成 UI 线程信号."""
 
@@ -49,6 +54,7 @@ class SourcePanel(QGroupBox):
         for name, _ in SOURCE_TYPES:
             self.type_combo.addItem(name)
         self.open_btn = QPushButton("打开")
+        self.open_btn.setObjectName("btn_open")  # 绿色; 打开后变 btn_close(红)
         self.open_btn.setFixedWidth(72)
         self.open_btn.clicked.connect(self._toggle)
         top.addWidget(self.type_combo, 1)
@@ -61,22 +67,10 @@ class SourcePanel(QGroupBox):
         self.type_combo.currentIndexChanged.connect(self.stack.setCurrentIndex)
         lay.addWidget(self.stack)
 
-        self.status = QLabel("未打开")
-        self.status.setObjectName("hint")
-        self.status.setWordWrap(True)
-        lay.addWidget(self.status)
-
-        # 文件发送进度条 (仅文件读源打开后显示)
-        self.progress = QProgressBar()
-        self.progress.setRange(0, 100)
-        self.progress.setValue(0)
-        self.progress.hide()
-        lay.addWidget(self.progress)
-
-        # 对端列表 (TCP服务端/组播/广播 打开后显示)
+        # 对端列表 (TCP服务端/组播/广播 打开后显示), 紧跟表单下方, 向上对齐
         self.peer_list = QListWidget()
         self.peer_list.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.peer_list.setMaximumHeight(104)
+        self.peer_list.setMaximumHeight(88)
         self.peer_btn_primary = QPushButton("设为主要对端")
         self.peer_btn_all = QPushButton("全部")
         self.peer_btn_primary.setFixedHeight(26)
@@ -91,6 +85,18 @@ class SourcePanel(QGroupBox):
         self.peer_box.addLayout(pb)
         lay.addLayout(self.peer_box)
         self._hide_peers()
+
+        self.status = QLabel("未打开")
+        self.status.setObjectName("hint")
+        self.status.setWordWrap(True)
+        lay.addWidget(self.status)
+
+        # 文件发送进度条 (仅文件读源打开后显示)
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.progress.hide()
+        lay.addWidget(self.progress)
 
         # 流量统计 (该源数据产生速率/累计)
         self.stat_lbl = QLabel("速率 --  |  共 --")
@@ -118,6 +124,8 @@ class SourcePanel(QGroupBox):
                           on_progress=lambda d, t: self.sig.progress.emit(d, t))
         self._set_status("已打开")
         self.open_btn.setText("关闭")
+        self.open_btn.setObjectName("btn_close")
+        _repolish(self.open_btn)
         self.type_combo.setEnabled(False)
         self._apply_form_lock(True)
         # 文件发送源: 限速控件保持可用 (转发中动态调速)
@@ -134,6 +142,36 @@ class SourcePanel(QGroupBox):
                 pass
         self._update_dynamic_widgets()
 
+    def close_source(self):
+        if self.source:
+            self.source.close()
+            self.source = None
+        self._set_status("未打开")
+        self.open_btn.setText("打开")
+        self.open_btn.setObjectName("btn_open")
+        _repolish(self.open_btn)
+        self.type_combo.setEnabled(True)
+        self._apply_form_lock(False)
+        # 恢复表单自身的联动状态 (如 TCP客户端 自动分配开关)
+        sync = getattr(self.current_form(), "sync_states_after_close", None) \
+            or getattr(self.current_form(), "sync_states", None)
+        if sync:
+            sync()
+        self._hide_peers()
+        self.peer_list.clear()
+        self.progress.hide()
+        self.stat_lbl.setText("速率 --  |  共 --")
+
+    def set_editable(self, on: bool):
+        """转发开始后禁用打开/类型切换, 停止后恢复 (文件限速滑块按其自身联动规则)."""
+        self.open_btn.setEnabled(on)
+        self.type_combo.setEnabled(on and self.source is None)
+        if self.source is not None:
+            self._apply_form_lock(True)  # 保持锁定(含限速豁免)
+        else:
+            self._apply_form_lock(not on)
+
+    # ---- 表单锁定 -------------------------------------------------------
     def _apply_form_lock(self, locked: bool) -> None:
         """锁定/解锁参数表单. 逐个控件设置而非禁用父容器(否则会阻断子控件);
         豁免限速控件及其祖先/后代容器, 保证整条交互链可用."""
@@ -148,27 +186,17 @@ class SourcePanel(QGroupBox):
         for w in self.stack.findChildren(QWidget):
             if not locked or not exempt(w):
                 w.setEnabled(not locked)
-
-    def close_source(self):
-        if self.source:
-            self.source.close()
-            self.source = None
-        self._set_status("未打开")
-        self.open_btn.setText("打开")
-        self.type_combo.setEnabled(True)
-        self._apply_form_lock(False)
-        self._hide_peers()
-        self.progress.hide()
-        self.stat_lbl.setText("速率 --  |  共 --")
-
-    def set_editable(self, on: bool):
-        """转发开始后禁用打开/类型切换, 停止后恢复 (文件限速滑块始终可调)."""
-        self.open_btn.setEnabled(on)
-        self.type_combo.setEnabled(on and self.source is None)
-        if self.source is not None:
-            self._apply_form_lock(True)  # 保持锁定(含限速豁免)
+        if locked:
+            # 重新应用表单内部联动 (不限速时滑块应禁用等)
+            refresh = getattr(self.current_form(), "refresh_widget_states", None)
+            if refresh:
+                refresh()
         else:
-            self._apply_form_lock(not on)
+            # 解锁时恢复每一个表单自身的联动状态 (切换类型后新表单也要正确)
+            for i in range(self.stack.count()):
+                sync = getattr(self.stack.widget(i), "sync_states", None)
+                if sync:
+                    sync()
 
     # ---- 动态区域 -------------------------------------------------------
     def _update_dynamic_widgets(self):
@@ -183,6 +211,7 @@ class SourcePanel(QGroupBox):
             self.progress.hide()
         if src is not None and src.supports_peers:
             self._show_peers()
+            self._refresh_peers()  # 打开时立即刷新, 不残留上一次的列表
         else:
             self._hide_peers()
 
