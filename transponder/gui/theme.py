@@ -8,7 +8,7 @@ import time
 from PySide6.QtCore import QPropertyAnimation, QRectF, QPointF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPalette
 from PySide6.QtWidgets import (
-    QApplication, QGraphicsOpacityEffect, QLabel, QSpinBox, QWidget, QStyle,
+    QApplication, QGraphicsOpacityEffect, QLabel, QSpinBox, QWidget,
 )
 
 ASSET_DIR = os.path.join(os.path.dirname(__file__), "assets")
@@ -76,6 +76,8 @@ QComboBox QLineEdit {{ background: transparent; border: none; padding: 0 2px; }}
 QComboBox::drop-down {{ border: none; width: 26px; subcontrol-origin: padding;
     subcontrol-position: top right; }}
 QComboBox::down-arrow {{ image: url({_url(f"arrow-down-{t['name']}.png")}); width: 12px; height: 12px; }}
+QComboBox QLineEdit {{ background: transparent; border: none; padding: 0 2px; color: {t['text']}; }}
+QComboBox QLineEdit:disabled {{ color: {t['disabled_fg']}; }}
 QComboBox QAbstractItemView {{
     background: {t['card']}; border: 1px solid {t['border2']}; border-radius: {ri};
     outline: 0; padding: 4px; selection-background-color: {t['sel_bg']};
@@ -89,6 +91,7 @@ QSpinBox::up-arrow {{ image: url({_url(f"spin-up-{t['name']}.png")}); width: 10p
 QSpinBox::down-arrow {{ image: url({_url(f"spin-down-{t['name']}.png")}); width: 10px; height: 8px; }}
 /* 最小值占位提示 (清空输入=自动/默认), 用淡色斜体显示 */
 QSpinBox[placeholder="true"] {{ color: {t['text_dim']}; font-style: italic; }}
+QSpinBox[placeholder="true"] QLineEdit {{ color: {t['text_dim']}; font-style: italic; }}
 
 QPushButton {{
     background: {t['card2']}; border: 1px solid {t['border2']}; border-radius: {rb};
@@ -224,8 +227,13 @@ class SwitchToggle(QWidget):
             self.toggled.emit(on)
         self.update()
 
+    def setEnabled(self, on: bool) -> None:
+        super().setEnabled(on)
+        self.update()
+
     def mousePressEvent(self, ev) -> None:
-        self.setChecked(not self._checked)
+        if self.isEnabled():
+            self.setChecked(not self._checked)
 
     def sizeHint(self):
         w = 46 + (self.fontMetrics().horizontalAdvance(self._text) + 8 if self._text else 0)
@@ -244,12 +252,17 @@ class SwitchToggle(QWidget):
             grad.setColorAt(1, QColor(t["accent"]))
             p.setBrush(grad)
             knob_x = track.right() - knob_r - 3
+        elif not self.isEnabled():
+            p.setBrush(QColor(t["disabled_bg"]))
+            knob_x = track.left() + 3
         else:
             p.setBrush(QColor(t["border2"]))
             knob_x = track.left() + 3
         p.setPen(Qt.NoPen)
         p.drawRoundedRect(track, h / 2, h / 2)
         p.setBrush(QColor("#E8EAF0") if current_theme() == "dark" else QColor("#FFFFFF"))
+        if not self.isEnabled():
+            p.setBrush(QColor(t["disabled_fg"]))
         p.drawEllipse(QPointF(knob_x + knob_r / 2, track.center().y()), knob_r / 2, knob_r / 2)
         if self._text:
             p.setPen(QColor(t["text"]))
@@ -259,17 +272,29 @@ class SwitchToggle(QWidget):
 
 
 class PlaceholderSpinBox(QSpinBox):
-    """占位式数字输入框: 值为最小值时以淡色显示提示文字(如"自动/默认");
+    """真正的空值占位数字框.
 
-    用户清空输入(失焦或按键)后自动回到最小值, 即回到占位状态.
+    最小值代表自动/默认, 但内部文本保持为空; placeholder 只由 QLineEdit
+    绘制, 不会参与编辑。用户输入数字会直接替换提示, 清空后回到最小值。
     """
 
     def __init__(self, placeholder: str = "自动", parent=None):
         super().__init__(parent)
         self._placeholder = placeholder
-        self.setSpecialValueText(placeholder)
+        self.setSpecialValueText("")
+        self.lineEdit().setPlaceholderText(placeholder)
         self.valueChanged.connect(self._sync_placeholder)
         self._sync_placeholder(self.value())
+
+    def textFromValue(self, value: int) -> str:
+        if value == self.minimum():
+            return ""
+        return super().textFromValue(value)
+
+    def valueFromText(self, text: str) -> int:
+        if not text.strip():
+            return self.minimum()
+        return super().valueFromText(text)
 
     def _sync_placeholder(self, _v: int) -> None:
         on = self.value() == self.minimum()
@@ -277,11 +302,11 @@ class PlaceholderSpinBox(QSpinBox):
             self.setProperty("placeholder", on)
             self.style().unpolish(self)
             self.style().polish(self)
+        self.lineEdit().setPlaceholderText(self._placeholder if on else "")
 
     def _maybe_reset(self) -> None:
-        txt = self.text().strip()
-        if not txt or txt == self._placeholder:
-            self.setValue(self.minimum())  # 触发 valueChanged -> 占位样式
+        if not self.text().strip():
+            self.setValue(self.minimum())
 
     def focusOutEvent(self, ev) -> None:
         self._maybe_reset()

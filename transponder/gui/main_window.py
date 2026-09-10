@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import os
+import platform
 import queue
 import time
+from datetime import datetime
 from typing import Optional
 
 from PySide6.QtCore import Qt, QTimer
@@ -73,6 +75,9 @@ class PreviewPane(QGroupBox):
         rec.addWidget(self.rec_fmt)
         rec.addWidget(QLabel("时间戳:"))
         rec.addWidget(self.rec_ts)
+        self.rate_lbl = QLabel("速率 --  |  共 --")
+        self.rate_lbl.setObjectName("stat")
+        rec.addWidget(self.rate_lbl)
         rec.addStretch(1)
         lay.addLayout(rec)
         self.paused = False
@@ -128,10 +133,10 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("MW数据转发器")
         self.setWindowIcon(QIcon(os.path.join(ASSET_DIR, "app-icon.svg")))
         self.resize(1180, 800)
+        self._theme = "light" if 8 <= datetime.now().hour < 20 else "dark"
+        self._rounded = not (platform.system() == "Windows" and platform.release() == "10")
         self.bridge: Optional[Bridge] = None
         self.session: Optional[LogSession] = None
-        self._theme = "dark"
-        self._rounded = True
         self._uiq: "queue.Queue[tuple]" = queue.Queue()
         self._pump = QTimer(self)
         self._pump.timeout.connect(self._drain_uiq)
@@ -144,17 +149,20 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(14, 10, 14, 10)
         root.setSpacing(10)
 
+        # 启动时按时间/系统版本应用默认主题和圆角风格
+        apply_theme(self._theme, self._rounded)
+
         # 标题栏: 标题 + 圆角风格 + 主题切换
         head = QHBoxLayout()
         title = QLabel("MW数据转发器")
         title.setObjectName("title")
         head.addWidget(title)
         head.addStretch(1)
-        self.style_btn = QPushButton("圆角")
+        self.style_btn = QPushButton("切换为直角" if self._rounded else "切换为圆角")
         self.style_btn.setFixedWidth(88)
         self.style_btn.clicked.connect(self._toggle_style)
         head.addWidget(self.style_btn)
-        self.theme_btn = QPushButton("🌙 浅色主题")
+        self.theme_btn = QPushButton("☀ 白色主题" if self._theme == "dark" else "🌙 黑色主题")
         self.theme_btn.setFixedWidth(110)
         self.theme_btn.clicked.connect(self._toggle_theme)
         head.addWidget(self.theme_btn)
@@ -179,24 +187,23 @@ class MainWindow(QMainWindow):
         bl.setSpacing(10)
         self.start_btn = QPushButton("▶  开始转发")
         self.stop_btn = QPushButton("■  停止转发")
+        self.log_dir_btn = QPushButton("设置日志目录")
         self.start_btn.setObjectName("primary")
         self.stop_btn.setObjectName("danger")
+        self.log_dir_btn.setObjectName("btn_open")
         self.stop_btn.setEnabled(False)
         f = QFont(); f.setPointSize(11); f.setBold(True)
-        self.start_btn.setFont(f); self.stop_btn.setFont(f)
+        self.start_btn.setFont(f); self.stop_btn.setFont(f); self.log_dir_btn.setFont(f)
         self.start_btn.clicked.connect(self._start)
         self.stop_btn.clicked.connect(self._stop)
+        self.log_dir_btn.clicked.connect(self._browse_dir)
         bl.addWidget(self.start_btn)
         bl.addWidget(self.stop_btn)
-        bl.addSpacing(20)
-        bl.addWidget(QLabel("记录目录:"))
+        bl.addWidget(self.log_dir_btn)
+        bl.addSpacing(14)
         self.log_dir = QLineEdit()
         self.log_dir.setPlaceholderText("落地记录根目录 basedir (任一侧开启记录后自动创建时间戳文件夹)")
         bl.addWidget(self.log_dir, 1)
-        self.browse_btn = QPushButton("浏览")
-        self.browse_btn.setFixedWidth(64)
-        self.browse_btn.clicked.connect(self._browse_dir)
-        bl.addWidget(self.browse_btn)
         root.addWidget(bar)
 
         # 分侧预览 (含分侧记录配置)
@@ -217,11 +224,23 @@ class MainWindow(QMainWindow):
         self.event_view = QTextEdit()
         self.event_view.setReadOnly(True)
         self.event_view.setMaximumHeight(120)
-        clear = QPushButton("清空")
-        clear.setFixedWidth(64)
-        clear.clicked.connect(self.event_view.clear)
-        el.addWidget(self.event_view)
-        el.addWidget(clear, alignment=Qt.AlignTop)
+        self.event_paused = False
+        self.event_pause_btn = QPushButton("暂停")
+        self.event_export_btn = QPushButton("导出")
+        self.event_clear_btn = QPushButton("清空")
+        for btn in (self.event_pause_btn, self.event_export_btn, self.event_clear_btn):
+            btn.setMinimumWidth(72)
+            btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+        self.event_pause_btn.clicked.connect(self._toggle_event_pause)
+        self.event_export_btn.clicked.connect(self._export_events)
+        self.event_clear_btn.clicked.connect(self.event_view.clear)
+        ev_buttons = QVBoxLayout()
+        ev_buttons.setSpacing(6)
+        ev_buttons.addWidget(self.event_pause_btn, 1)
+        ev_buttons.addWidget(self.event_export_btn, 1)
+        ev_buttons.addWidget(self.event_clear_btn, 1)
+        el.addWidget(self.event_view, 1)
+        el.addLayout(ev_buttons)
         root.addWidget(ev_box)
 
         self.stat_timer = QTimer(self)
@@ -234,12 +253,12 @@ class MainWindow(QMainWindow):
     def _toggle_theme(self):
         self._theme = "light" if self._theme == "dark" else "dark"
         apply_theme(self._theme, self._rounded)
-        self.theme_btn.setText("🌙 浅色主题" if self._theme == "dark" else "☀ 深色主题")
+        self.theme_btn.setText("☀ 白色主题" if self._theme == "dark" else "🌙 黑色主题")
 
     def _toggle_style(self):
         self._rounded = not self._rounded
         apply_theme(self._theme, self._rounded)
-        self.style_btn.setText("圆角" if self._rounded else "直角")
+        self.style_btn.setText("切换为直角" if self._rounded else "切换为圆角")
 
     # ---- 参数预填充 (命令行带参启动GUI) --------------------------------
     def _apply_prefill(self, pf: dict):
@@ -315,13 +334,13 @@ class MainWindow(QMainWindow):
         self.bridge.start()
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
+        self.log_dir_btn.setEnabled(False)
         self.panel_m.set_editable(False)
         self.panel_w.set_editable(False)
         # 落地记录配置锁定 (停止转发后才能修改)
         self.pane_m.set_record_editable(False)
         self.pane_w.set_record_editable(False)
         self.log_dir.setEnabled(False)
-        self.browse_btn.setEnabled(False)
         self.stat_timer.start(500)
 
     def _stop(self):
@@ -332,20 +351,35 @@ class MainWindow(QMainWindow):
         if self.bridge:
             tm, _ = self.bridge.stats_m2w.snapshot()
             tw, _ = self.bridge.stats_w2m.snapshot()
-            self.panel_m.update_stats(tm, 0)
-            self.panel_w.update_stats(tw, 0)
+            self.pane_m.rate_lbl.setText(f"速率 0 B/s  |  共 {_fmt_rate(tm)}")
+            self.pane_w.rate_lbl.setText(f"速率 0 B/s  |  共 {_fmt_rate(tw)}")
         # 立刻释放落地记录文件句柄 (不再占用日志文件与时间戳文件夹)
         if self.session:
             self.session.close()
             self.session = None
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
+        self.log_dir_btn.setEnabled(True)
         self.panel_m.set_editable(True)
         self.panel_w.set_editable(True)
         self.pane_m.set_record_editable(True)
         self.pane_w.set_record_editable(True)
         self.log_dir.setEnabled(True)
-        self.browse_btn.setEnabled(True)
+
+    def _toggle_event_pause(self):
+        self.event_paused = not self.event_paused
+        self.event_pause_btn.setText("继续" if self.event_paused else "暂停")
+
+    def _export_events(self):
+        path, _ = QFileDialog.getSaveFileName(self, "导出事件日志", "events.txt", "文本文件 (*.txt);;所有文件 (*)")
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(self.event_view.toPlainText())
+            toast(self, f"事件日志已导出: {path}", "success")
+        except OSError as exc:
+            toast(self, f"导出失败: {exc}", "error")
 
     def closeEvent(self, ev):
         self._stop()
@@ -365,7 +399,8 @@ class MainWindow(QMainWindow):
                 break
             kind = item[0]
             if kind == "event":
-                self.event_view.append(self._ts() + "  " + item[1])
+                if not self.event_paused:
+                    self.event_view.append(self._ts() + "  " + item[1])
             elif kind == "preview":
                 (self.pane_m if item[1] == "M" else self.pane_w).append(item[2])
 
@@ -384,10 +419,18 @@ class MainWindow(QMainWindow):
             return
         tm, rm = self.bridge.stats_m2w.snapshot()
         tw, rw = self.bridge.stats_w2m.snapshot()
-        self.panel_m.update_stats(tm, rm)
-        self.panel_w.update_stats(tw, rw)
+        self.pane_m.rate_lbl.setText(f"速率 {_fmt_rate(rm)}/s  |  共 {_fmt_rate(tm)}")
+        self.pane_w.rate_lbl.setText(f"速率 {_fmt_rate(rw)}/s  |  共 {_fmt_rate(tw)}")
 
     def _browse_dir(self):
         path = QFileDialog.getExistingDirectory(self, "选择落地记录根目录")
         if path:
             self.log_dir.setText(path)
+
+
+def _fmt_rate(n: float) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024:
+            return f"{n:.1f} {unit}" if unit != "B" else f"{int(n)} B"
+        n /= 1024
+    return f"{n:.1f} TB"
