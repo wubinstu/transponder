@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 打包产物
+build/
+dist/
+*.spec
+
+# IDE / Qt Creator
+.qtcreator/
+.idea/
+.vscode/
+CMakeLists.txt.user
+
+# 运行时产物
+logs/
+*.log
+tests/data.bin
