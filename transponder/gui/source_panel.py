@@ -7,11 +7,12 @@ from typing import Optional
 from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtWidgets import (
     QGroupBox, QVBoxLayout, QHBoxLayout, QComboBox, QStackedWidget, QPushButton,
-    QLabel, QListWidget, QProgressBar, QMessageBox, QAbstractItemView,
+    QLabel, QListWidget, QProgressBar, QAbstractItemView, QWidget,
 )
 
 from ..core import DataSource, FileSendSource, SerialSource
 from .forms import SOURCE_TYPES
+from .theme import toast
 
 
 def _fmt_bytes(n: float) -> str:
@@ -69,14 +70,13 @@ class SourcePanel(QGroupBox):
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
-        self.progress.setFormat("发送进度 %p% (%v KB)")
         self.progress.hide()
         lay.addWidget(self.progress)
 
         # 对端列表 (TCP服务端/组播/广播 打开后显示)
         self.peer_list = QListWidget()
         self.peer_list.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.peer_list.setMaximumHeight(96)
+        self.peer_list.setMaximumHeight(104)
         self.peer_btn_primary = QPushButton("设为主要对端")
         self.peer_btn_all = QPushButton("全部")
         self.peer_btn_primary.setFixedHeight(26)
@@ -109,7 +109,7 @@ class SourcePanel(QGroupBox):
             src = self.current_form().build()
             src.open()
         except Exception as e:
-            QMessageBox.warning(self, "打开失败", str(e))
+            toast(self.window(), f"打开失败: {e}", "error")
             return
         self.source = src
         # 面板自身关心的回调: 状态/对端/进度 (转发数据回调由 Bridge 注入)
@@ -119,8 +119,35 @@ class SourcePanel(QGroupBox):
         self._set_status("已打开")
         self.open_btn.setText("关闭")
         self.type_combo.setEnabled(False)
-        self.stack.setEnabled(False)
+        self._apply_form_lock(True)
+        # 文件发送源: 限速控件保持可用 (转发中动态调速)
+        if isinstance(src, FileSendSource):
+            form = self.current_form()
+            if hasattr(form, "on_rate_change"):
+                form.on_rate_change = src.set_rate
+        # 自动端口回显 (表单钩子)
+        on_opened = getattr(self.current_form(), "on_opened", None)
+        if on_opened:
+            try:
+                on_opened(src)
+            except Exception:
+                pass
         self._update_dynamic_widgets()
+
+    def _apply_form_lock(self, locked: bool) -> None:
+        """锁定/解锁参数表单. 逐个控件设置而非禁用父容器(否则会阻断子控件);
+        豁免限速控件及其祖先/后代容器, 保证整条交互链可用."""
+        keep: list[QWidget] = []
+        if locked and isinstance(self.source, FileSendSource):
+            keep = self.current_form().rate_widgets()
+        self.stack.setEnabled(True)
+
+        def exempt(w: QWidget) -> bool:
+            return any(w is k or w.isAncestorOf(k) or k.isAncestorOf(w) for k in keep)
+
+        for w in self.stack.findChildren(QWidget):
+            if not locked or not exempt(w):
+                w.setEnabled(not locked)
 
     def close_source(self):
         if self.source:
@@ -129,23 +156,26 @@ class SourcePanel(QGroupBox):
         self._set_status("未打开")
         self.open_btn.setText("打开")
         self.type_combo.setEnabled(True)
-        self.stack.setEnabled(True)
+        self._apply_form_lock(False)
         self._hide_peers()
         self.progress.hide()
         self.stat_lbl.setText("速率 --  |  共 --")
 
     def set_editable(self, on: bool):
-        """转发开始后禁用打开/类型切换, 停止后恢复."""
+        """转发开始后禁用打开/类型切换, 停止后恢复 (文件限速滑块始终可调)."""
         self.open_btn.setEnabled(on)
         self.type_combo.setEnabled(on and self.source is None)
-        self.stack.setEnabled(on and self.source is None)
+        if self.source is not None:
+            self._apply_form_lock(True)  # 保持锁定(含限速豁免)
+        else:
+            self._apply_form_lock(not on)
 
     # ---- 动态区域 -------------------------------------------------------
     def _update_dynamic_widgets(self):
         src = self.source
         if isinstance(src, FileSendSource):
             total = getattr(src, "_total", 0)
-            self.progress.setRange(0, max(total // 1024, 1))
+            self.progress.setRange(0, max(total, 1))
             self.progress.setValue(0)
             self.progress.setFormat(f"发送进度 %p%  (共 {_fmt_bytes(total)})")
             self.progress.show()
@@ -179,28 +209,28 @@ class SourcePanel(QGroupBox):
             return
         current = self.peer_list.currentRow()
         self.peer_list.clear()
-        peers = self.source.peers()
+        peers = self.source.peers()  # 已按接入序号排序
         if not peers:
             self.peer_list.addItem("(暂无对端)")
         for p in peers:
             mark = "● " if p.addr == self.source.primary_peer else "  "
-            self.peer_list.addItem(f"{mark}{p.addr}    收 {_fmt_bytes(p.rx_bytes)}")
-        if current >= 0 and current < self.peer_list.count():
+            self.peer_list.addItem(f"{mark}#{p.seq}  {p.addr}    收 {_fmt_bytes(p.rx_bytes)}")
+        if 0 <= current < self.peer_list.count() and self.peer_list.count() > 1:
             self.peer_list.setCurrentRow(current)
 
     def _set_primary(self):
         src = self.source
         if not src:
             return
-        row = self.peer_list.currentItem()
-        if not row or not src.peers():
-            QMessageBox.information(self, "提示", "请先在列表中选择一个对端")
+        row = self.peer_list.currentRow()
+        peers = src.peers()
+        if not peers or row < 0 or row >= len(peers):
+            toast(self.window(), "请先在列表中选择一个对端", "info")
             return
-        addr = src.peers()[self.peer_list.currentRow()].addr
         try:
-            src.set_primary_peer(addr)
+            src.set_primary_peer(peers[row].addr)
         except ValueError as e:
-            QMessageBox.warning(self, "失败", str(e))
+            toast(self.window(), str(e), "error")
 
     def _clear_primary(self):
         if self.source and self.source.supports_peers:

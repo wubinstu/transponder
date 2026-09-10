@@ -103,6 +103,7 @@ def parse_spec(spec: str) -> DataSource:
         if not is_valid_multicast(group):
             raise ValueError(f"无效的组播地址: {group} (有效范围 224.0.0.0/4)")
         return MulticastSource(group, int(_need(kv, stype, "port")),
+                               local_ip=_opt(kv, "local_host", "0.0.0.0"),
                                ttl=int(_opt(kv, "ttl", "1")))
     if stype == "broadcast":
         return BroadcastSource(

@@ -32,6 +32,7 @@ class Peer:
     addr: str                 # "ip:port" 展示形式
     rx_bytes: int = 0         # 从该对端累计收到的字节数
     alive: bool = True        # TCP: 连接是否仍存活; UDP类: 是否仍活跃
+    seq: int = 0              # 接入序号(按连接顺序自增, 断开不回收)
 
 
 class DataSource:
@@ -52,6 +53,7 @@ class DataSource:
         # 对端列表 (单对端源为空即可)
         self._peers: list[Peer] = []
         self._peer_lock = threading.Lock()
+        self._peer_seq = 0  # 对端接入序号, 自增不回收
         self.primary_peer: Optional[str] = None
         self.desired_primary: Optional[str] = None  # 期望主要对端, 该对端出现时自动生效
 
@@ -98,14 +100,15 @@ class DataSource:
 
     def peers(self) -> list[Peer]:
         with self._peer_lock:
-            return list(self._peers)
+            return sorted(self._peers, key=lambda p: p.seq)
 
     def _add_peer(self, addr: str) -> Peer:
         with self._peer_lock:
             for p in self._peers:
                 if p.addr == addr:
                     return p
-            p = Peer(addr=addr)
+            self._peer_seq += 1
+            p = Peer(addr=addr, seq=self._peer_seq)
             self._peers.append(p)
             return p
 

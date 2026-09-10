@@ -20,3 +20,4 @@ CMakeLists.txt.user
 logs/
 *.log
 tests/data.bin
+tests/screenshot_*.png

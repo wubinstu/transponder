@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+import os
 import sys
 
 
 def run_gui(args=None) -> int:
     try:
         from PySide6.QtWidgets import QApplication
-        from PySide6.QtCore import QTimer
     except Exception as e:  # PySide6 未安装
         print(f"错误: 无法加载图形界面依赖 PySide6: {e}", file=sys.stderr)
         return 3
@@ -20,18 +20,22 @@ def run_gui(args=None) -> int:
               f"可加 --nogui 使用命令行模式", file=sys.stderr)
         return 3
 
-    from PySide6.QtWidgets import QMessageBox
     app.setStyle("Fusion")
-    from .theme import QSS
-    app.setStyleSheet(QSS)
+    from .theme import apply_theme, ASSET_DIR
+    apply_theme("dark")
+    from PySide6.QtGui import QIcon
+    app.setWindowIcon(QIcon(os.path.join(ASSET_DIR, "app-icon.svg")))
     from .main_window import MainWindow
 
     prefill = None
     if args is not None and (args.spec_m or args.spec_w):
         prefill = {"m": args.spec_m, "w": args.spec_w,
-                   "log_dir": args.log_dir, "log_m": args.log_m,
-                   "log_w": args.log_w, "log_fmt": args.log_fmt,
-                   "log_ts": args.log_ts}
+                   "log_dir": args.log_dir,
+                   "log_m": args.log_m, "log_w": args.log_w,
+                   "log_fmt_m": getattr(args, "log_fmt_m", None),
+                   "log_fmt_w": getattr(args, "log_fmt_w", None),
+                   "log_ts_m": getattr(args, "log_ts_m", None),
+                   "log_ts_w": getattr(args, "log_ts_w", None)}
     win = MainWindow(prefill)
     win.show()
     return app.exec()

@@ -109,6 +109,17 @@ def addr_in_use(host: str, port: int) -> bool:
         return True
 
 
+def udp_bind_ok(host: str, port: int) -> bool:
+    """检测 UDP 本地绑定是否可用 (port=0 仅测试主机地址合法性)."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.bind((host, port))
+        s.close()
+        return True
+    except OSError:
+        return False
+
+
 def is_valid_multicast(addr: str) -> bool:
     """是否为有效组播地址 (224.0.0.0/4)."""
     try:
@@ -135,13 +146,20 @@ class TcpClientSource(DataSource):
         self.host = host
         self.port = port
         self.local_host = local_host  # 空 = 系统自动选择
-        self.local_port = local_port  # 0 = 系统自动分配
+        self._local_port_cfg = local_port  # 0 = 系统自动分配
         self._sock: Optional[socket.socket] = None
+
+    @property
+    def local_port(self) -> int:
+        """实际本地端口 (未连接时返回配置值, 0 表示自动)."""
+        if self._sock:
+            return self._sock.getsockname()[1]
+        return self._local_port_cfg
 
     def _open(self) -> None:
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        if self.local_host or self.local_port:
-            self._sock.bind((self.local_host or "0.0.0.0", self.local_port))
+        if self.local_host or self._local_port_cfg:
+            self._sock.bind((self.local_host or "0.0.0.0", self._local_port_cfg))
             self._emit_state(f"本地绑定 {_fmt(self._sock.getsockname())}")
         self._sock.settimeout(self.CONNECT_TIMEOUT)
         self._sock.connect((self.host, self.port))
@@ -387,19 +405,45 @@ class UdpUnicastSource(DataSource):
 
 
 class _UdpGroupBase(DataSource):
-    """组播/广播公共: 单 socket 收发, 跟踪发送方地址形成对端列表."""
+    """组播/广播公共: 跟踪发送方地址形成对端列表, 并过滤自己发出的回环数据.
+
+    回环自滤(实现见子类): 保持系统回环开启便于本机其他程序参与测试,
+    通过 "来源IP=本机地址 且 来源端口=自滤端口集合" 识别并丢弃自己的数据.
+    """
 
     name = "UDP组"
 
     def __init__(self) -> None:
         super().__init__()
         self._sock: Optional[socket.socket] = None
+        self._send_sock: Optional[socket.socket] = None  # 组播: 独立发送socket(临时端口)
         self._target: ADDR = ("", 0)  # 发送目标 (组地址或广播地址:端口)
         self._lock = threading.Lock()
+        self._local_ips: set[str] = set()
 
     @property
     def supports_peers(self) -> bool:
         return True
+
+    @property
+    def local_port(self) -> int:
+        return self._sock.getsockname()[1] if self._sock else 0
+
+    def _refresh_local_ips(self) -> None:
+        # 含 127.0.0.1: 广播/组播经环回口回来时来源IP是 127.0.0.1
+        self._local_ips = {ip for ip in scan_local_addresses() if ip != "0.0.0.0"}
+
+    def _self_ports(self) -> set[int]:
+        """自滤端口集合: 这些本机端口发来的数据报视为自己发出的."""
+        ports = set()
+        if self._send_sock:
+            ports.add(self._send_sock.getsockname()[1])
+        elif self._sock:
+            ports.add(self._sock.getsockname()[1])
+        return ports
+
+    def _is_own_loopback(self, addr: ADDR) -> bool:
+        return addr[0] in self._local_ips and addr[1] in self._self_ports()
 
     def _read_once(self) -> Optional[bytes]:
         if self._sock is None:
@@ -407,6 +451,8 @@ class _UdpGroupBase(DataSource):
         try:
             data, addr = self._sock.recvfrom(65536)
         except socket.timeout:
+            return None
+        if self._is_own_loopback(addr):  # 自己发出的数据不回到转发链路
             return None
         key = _fmt(addr)
         # 主要对端模式: 只接收主要对端的数据
@@ -418,46 +464,67 @@ class _UdpGroupBase(DataSource):
 
     def _write(self, data: bytes) -> int:
         with self._lock:
-            if self._sock is None:
+            sock = self._send_sock or self._sock
+            if sock is None:
                 raise IOError("未打开")
-            self._sock.sendto(data, self._target)
+            sock.sendto(data, self._target)
             return len(data)
 
     def _close(self) -> None:
         with self._lock:
-            if self._sock:
-                self._sock.close()
-                self._sock = None
+            for s in (self._sock, self._send_sock):
+                if s:
+                    try:
+                        s.close()
+                    except OSError:
+                        pass
+            self._sock = None
+            self._send_sock = None
         with self._peer_lock:
             self._peers.clear()
 
 
 class MulticastSource(_UdpGroupBase):
-    """组播源: 加入组收发; 禁用 IP_MULTICAST_LOOP 避免收到自己发出的数据."""
+    """组播源: 接收socket加入组并绑定组端口; 发送用独立临时端口socket.
+
+    自己发出的组播经系统回环到达接收socket时, 来源端口=发送socket的临时端口,
+    以此精确过滤 (本机其他组播程序不受影响, 便于同机测试).
+    """
 
     name = "组播"
 
-    def __init__(self, group: str, port: int, ttl: int = 1) -> None:
+    def __init__(self, group: str, port: int, local_ip: str = "0.0.0.0",
+                 ttl: int = 1) -> None:
         super().__init__()
         if not is_valid_multicast(group):
             raise ValueError(f"无效的组播地址: {group} (有效范围 224.0.0.0/4)")
         self.group = group
         self.port = port
+        self.local_ip = local_ip
         self.ttl = ttl
 
     def _open(self) -> None:
+        self._refresh_local_ips()
+        # 接收 socket: 绑定组端口并加入组播组
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sock.settimeout(0.2)
         # 允许多个组播监听者绑定同一端口 (跨进程/跨实例测试的前提)
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, self.ttl)
-        # 关闭组播回环: 自己发的组播数据不会回到自己的接收端
-        self._sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 0)
-        mreq = struct.pack("4sl", socket.inet_aton(self.group), socket.INADDR_ANY)
-        self._sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+        iface = socket.inet_aton("0.0.0.0") if self.local_ip in ("0.0.0.0", "") \
+            else socket.inet_aton(self.local_ip)
+        self._sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP,
+                              struct.pack("4s4s", socket.inet_aton(self.group), iface))
         self._sock.bind(("0.0.0.0", self.port))
+        # 发送 socket: 独立临时端口, 其端口号即自滤依据
+        self._send_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._send_sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, self.ttl)
+        if self.local_ip not in ("0.0.0.0", ""):  # 指定发送出口接口
+            self._send_sock.setsockopt(
+                socket.IPPROTO_IP, socket.IP_MULTICAST_IF, iface)
+        self._send_sock.bind(("0.0.0.0", 0))
         self._target = (self.group, self.port)
-        self._emit_state(f"已加入组播组 {self.group}:{self.port}")
+        self._emit_state(f"已加入组播组 {self.group}:{self.port}"
+                         + (f" (接口 {self.local_ip})" if self.local_ip != "0.0.0.0" else ""))
 
 
 class BroadcastSource(_UdpGroupBase):
@@ -471,13 +538,18 @@ class BroadcastSource(_UdpGroupBase):
         self.bcast_addr = addr
         self.port = port
         self.local_host = local_host
-        self.local_port = local_port
+        self._local_port_cfg = local_port
+
+    @property
+    def local_port(self) -> int:
+        return self._sock.getsockname()[1] if self._sock else self._local_port_cfg
 
     def _open(self) -> None:
+        self._refresh_local_ips()
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sock.settimeout(0.2)
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        self._sock.bind((self.local_host, self.local_port))
+        self._sock.bind((self.local_host, self._local_port_cfg))
         self._target = (self.bcast_addr, self.port)
         local = self._sock.getsockname()
         self._emit_state(f"广播 {self.bcast_addr}:{self.port} (本地 {local[0]}:{local[1]})")

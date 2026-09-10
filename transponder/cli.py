@@ -40,9 +40,17 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--log-m", action="store_true", help="记录数据源 M 的数据")
     p.add_argument("--log-w", action="store_true", help="记录数据源 W 的数据")
     p.add_argument("--log-fmt", choices=["bin", "txt"], default="bin",
-                   help="落地格式: bin=原始二进制, txt=文本 (默认 bin)")
+                   help="落地格式默认值: bin=原始二进制, txt=文本 (默认 bin)")
+    p.add_argument("--log-fmt-m", choices=["bin", "txt"],
+                   help="M 侧落地格式 (覆盖 --log-fmt)")
+    p.add_argument("--log-fmt-w", choices=["bin", "txt"],
+                   help="W 侧落地格式 (覆盖 --log-fmt)")
     p.add_argument("--log-ts", type=int, metavar="MS", default=0,
-                   help="txt 格式的时间戳输出间隔毫秒 (0=不输出时间戳)")
+                   help="txt 格式的时间戳输出间隔毫秒默认值 (0=不输出)")
+    p.add_argument("--log-ts-m", type=int, metavar="MS",
+                   help="M 侧时间戳间隔 (覆盖 --log-ts)")
+    p.add_argument("--log-ts-w", type=int, metavar="MS",
+                   help="W 侧时间戳间隔 (覆盖 --log-ts)")
     p.add_argument("--list-serial", action="store_true", help="列出可用串口后退出")
     p.add_argument("--list-net", action="store_true", help="列出本机网卡地址/广播地址后退出")
     return p
@@ -90,9 +98,11 @@ def run(args: argparse.Namespace) -> int:
     if (args.log_m or args.log_w) and args.log_dir:
         session = LogSession(args.log_dir)
         if args.log_m:
-            log_m = session.writer("M", args.log_fmt, args.log_ts)
+            log_m = session.writer("M", args.log_fmt_m or args.log_fmt,
+                                   args.log_ts_m if args.log_ts_m is not None else args.log_ts)
         if args.log_w:
-            log_w = session.writer("W", args.log_fmt, args.log_ts)
+            log_w = session.writer("W", args.log_fmt_w or args.log_fmt,
+                                   args.log_ts_w if args.log_ts_w is not None else args.log_ts)
         print(f"落地记录目录: {session.dir}", flush=True)
     elif args.log_m or args.log_w:
         print("提示: 已指定 --log-m/--log-w 但未指定 --log-dir, 不记录", file=sys.stderr)

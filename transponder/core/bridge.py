@@ -101,6 +101,8 @@ class LogSession:
 class Bridge:
     """连接数据源 M 与 W: M 收到的数据发给 W, 反之亦然."""
 
+    EVENT_DEDUP_SECONDS = 5.0  # 相同文本的事件最小输出间隔, 避免刷屏
+
     def __init__(
         self,
         src_m: DataSource,
@@ -119,27 +121,44 @@ class Bridge:
         self.stats_m2w = TrafficStats()
         self.stats_w2m = TrafficStats()
         self.running = False
+        self._last_event_at: dict[str, float] = {}
 
-    def _event(self, msg: str) -> None:
-        if self.on_event:
-            self.on_event(msg)
+    def _event(self, msg: str, dedup: bool = False) -> None:
+        """dedup=True 时, 相同文本在 EVENT_DEDUP_SECONDS 内只输出一次."""
+        if not self.on_event:
+            return
+        now = time.monotonic()
+        if dedup:
+            last = self._last_event_at.get(msg, 0.0)
+            if now - last < self.EVENT_DEDUP_SECONDS:
+                return
+            self._last_event_at[msg] = now
+        self.on_event(msg)
 
     def _make_relay(self, src: DataSource, dst: DataSource,
                     stats: TrafficStats, direction: str,
                     log: Optional[SourceLog]):
+        ignored = {"bytes": 0, "at": 0.0}  # 单方向写入失败累计 (如对端为文件只读源)
+
         def on_data(data: bytes) -> None:
             stats.add(len(data))
             if log:
                 try:
                     log.log(data)
                 except Exception as exc:
-                    self._event(f"记录失败: {exc}")
+                    self._event(f"记录失败: {exc}", dedup=True)
             if self.on_preview:
                 self.on_preview(direction, data)
             try:
                 dst.send(data)
             except Exception as exc:
-                self._event(f"{direction} 转发失败: {exc}")
+                # 文件单向等预期内的写入失败不属于错误: 累计后低频提示
+                ignored["bytes"] += len(data)
+                now = time.monotonic()
+                if now - ignored["at"] >= self.EVENT_DEDUP_SECONDS:
+                    ignored["at"] = now
+                    self._event(f"{direction} 忽略 {ignored['bytes']}B ({exc})", dedup=True)
+                    ignored["bytes"] = 0
 
         src.set_callbacks(on_data=on_data,
                           on_error=lambda msg: self._event(msg),

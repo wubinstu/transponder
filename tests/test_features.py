@@ -44,28 +44,41 @@ assert peer.recv(100) == b"TO_PEER"
 src.close()
 print("TEST UDP单播对端过滤 PASS")
 
-# ---- 组播: 回环禁用 (自己发的不回到自己) + 地址校验 ----------------------
+# ---- 组播: 自回环过滤(按 ip+端口), 本机其他成员可互通 ----------------------
 assert is_valid_multicast("239.1.1.1") and not is_valid_multicast("192.168.1.1")
 mc = MulticastSource("239.8.8.8", PORT, ttl=1)
 mc.open(); mc.start()
-# IP_MULTICAST_LOOP=0: 自己发出的组播不会回到本机任何 socket (Windows 上为整机行为)
 got = drain(mc, 0.8, action=lambda: mc.send(b"LOOP_TEST"))
-assert b"LOOP_TEST" not in b"".join(got), f"组播回环未禁用: {got}"
-mc.close()
-print("TEST 组播回环禁用 PASS")
+assert b"LOOP_TEST" not in b"".join(got), f"自己发的数据未被过滤: {got}"
+# 本机另一个组播成员: 能收到 mc 的数据, 其数据也能被 mc 收到 (不再整机禁回环)
+mc2 = MulticastSource("239.8.8.8", PORT)
+mc2.open(); mc2.start()
+got = drain(mc2, 0.8, action=lambda: mc.send(b"MULTI_X"))
+assert b"MULTI_X" in b"".join(got), "本机其他组播成员未收到数据"
+got = drain(mc, 0.8, action=lambda: mc2.send(b"MULTI_BACK"))
+assert b"MULTI_BACK" in b"".join(got), "本机其他成员的数据被误过滤"
+mc.close(); mc2.close()
+print("TEST 组播自滤+本机互通 PASS")
 
-# ---- 广播: 发送至指定广播地址, 接收方绑定同端口可收到 --------------------
-bc = BroadcastSource(addr="127.255.255.255", port=PORT)
+# ---- 广播: 自回环过滤 + 其他本机程序可收 ----------------------------------
+bc = BroadcastSource(addr="127.255.255.255", port=PORT, local_port=PORT)
 bc.open(); bc.start()
+got = drain(bc, 0.8, action=lambda: bc.send(b"BCAST_SELF"))
+assert b"BCAST_SELF" not in b"".join(got), "广播自回环未过滤"
+bc.close()
+# 其他本机程序: 绑定广播端口能收到 (不同实例, 本地端口不冲突)
+PORT2 = PORT + 1
+bc2 = BroadcastSource(addr="127.255.255.255", port=PORT2, local_port=0)
+bc2.open()
 rcv = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 rcv.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-rcv.bind(("0.0.0.0", PORT))
+rcv.bind(("0.0.0.0", PORT2))
 rcv.settimeout(2)
-bc.send(b"BCAST")
+bc2.send(b"BCAST")
 data, addr = rcv.recvfrom(100)
 assert data == b"BCAST"
-bc.close(); rcv.close()
-print("TEST 广播 PASS")
+bc2.close(); rcv.close()
+print("TEST 广播自滤+互通 PASS")
 
 # ---- 落地记录: TXT 时间戳间隔 ------------------------------------------
 tmp = tempfile.mkdtemp()
@@ -112,7 +125,9 @@ time.sleep(0.2)
 ca = socket.create_connection(("127.0.0.1", PORT), timeout=2)
 cb = socket.create_connection(("127.0.0.1", PORT), timeout=2)
 time.sleep(0.5)
-assert len(srv.peers()) == 2, f"对端列表: {len(srv.peers())}"
+peers = srv.peers()
+assert len(peers) == 2, f"对端列表: {len(peers)}"
+assert [p.seq for p in peers] == [1, 2], "接入序号应按顺序自增"
 srv.send(b"FANOUT")  # 未选主要对端 -> 全部客户端收到
 ca.settimeout(2); cb.settimeout(2)
 assert ca.recv(100) == b"FANOUT" and cb.recv(100) == b"FANOUT", "扇出失败"

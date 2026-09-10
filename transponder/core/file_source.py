@@ -23,10 +23,14 @@ class FileSendSource(DataSource):
     def __init__(self, path: str, rate_bps: Optional[int] = None) -> None:
         super().__init__()
         self.path = path
-        self.rate_bps = rate_bps
+        self.rate_bps = rate_bps  # 可运行中修改 (动态限速); None/0 = 不限速
         self._f = None
         self._total = 0
         self._sent = 0
+
+    def set_rate(self, rate_bps: Optional[int]) -> None:
+        """转发过程中动态调整限速 (None 或 0 = 不限速)."""
+        self.rate_bps = rate_bps or None
 
     def _open(self) -> None:
         self._f = open(self.path, "rb")

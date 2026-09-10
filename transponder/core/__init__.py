@@ -7,7 +7,7 @@ from .net_source import (
     TcpClientSource, TcpServerSource, UdpUnicastSource,
     MulticastSource, BroadcastSource,
     scan_local_addresses, scan_broadcast_addresses, addr_in_use,
-    is_valid_multicast,
+    is_valid_multicast, udp_bind_ok,
 )
 from .bridge import Bridge, TrafficStats, SourceLog, LogSession
 from .factory import parse_spec, parse_primary
@@ -19,7 +19,7 @@ __all__ = [
     "TcpClientSource", "TcpServerSource", "UdpUnicastSource",
     "MulticastSource", "BroadcastSource",
     "scan_local_addresses", "scan_broadcast_addresses", "addr_in_use",
-    "is_valid_multicast",
+    "is_valid_multicast", "udp_bind_ok",
     "Bridge", "TrafficStats", "SourceLog", "LogSession",
     "parse_spec", "parse_primary",
 ]

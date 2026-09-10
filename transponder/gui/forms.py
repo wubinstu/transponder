@@ -2,7 +2,8 @@
 
 每个表单实现:
 - build() -> DataSource  依据当前表单内容构造数据源
-- fill(kv: dict)         用规格串解析出的参数预填充表单 (用于命令行参数带参启动GUI)
+- fill(kv: dict)         用规格串解析出的参数预填充 (命令行带参启动GUI)
+- on_opened(src)         打开成功后的回填钩子 (如自动端口显示实际值)
 """
 
 from __future__ import annotations
@@ -12,8 +13,8 @@ from typing import Optional
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QComboBox, QPushButton, QLabel,
-    QLineEdit, QSpinBox, QCheckBox, QFileDialog, QMessageBox, QSlider,
-    QRadioButton, QButtonGroup, QSizePolicy,
+    QLineEdit, QSpinBox, QFileDialog, QSlider, QRadioButton, QButtonGroup,
+    QSizePolicy,
 )
 
 from ..core import (
@@ -21,9 +22,10 @@ from ..core import (
     FileSendSource, FileRecvSource,
     TcpClientSource, TcpServerSource, UdpUnicastSource,
     MulticastSource, BroadcastSource,
-    scan_local_addresses, scan_broadcast_addresses, addr_in_use, is_valid_multicast,
+    scan_local_addresses, scan_broadcast_addresses, addr_in_use,
+    is_valid_multicast, udp_bind_ok,
 )
-from .theme import SwitchToggle
+from .theme import SwitchToggle, toast
 
 
 def _row(label: str, *fields: QWidget, stretch_last=True) -> QWidget:
@@ -45,6 +47,14 @@ def _pair(field: QWidget, button: QWidget) -> QWidget:
     h.addWidget(field, 1)
     h.addWidget(button)
     return w
+
+
+def fmt_rate(bps: float) -> str:
+    """限速显示: 智能单位, 保留两位小数."""
+    for unit, factor in (("B", 1), ("KB", 1024), ("MB", 1024 * 1024)):
+        if bps < 1024 * factor:
+            return f"{bps / factor:.2f} {unit}/s"
+    return f"{bps / 1024**3:.2f} GB/s"
 
 
 class SerialForm(QWidget):
@@ -137,7 +147,7 @@ class FileForm(QWidget):
         self.sl_mb = self._slider()
         for slider, unit in [(self.sl_b, "B"), (self.sl_kb, "KB"), (self.sl_mb, "MB")]:
             lbl = QLabel("0")
-            lbl.setMinimumWidth(52)
+            lbl.setMinimumWidth(64)
             slider.valueChanged.connect(lambda v, l=lbl, u=unit: l.setText(f"{v} {u}"))
             row = _row("", slider, lbl)
             row.layout().itemAt(0).widget().deleteLater()  # 去掉占位label
@@ -148,17 +158,29 @@ class FileForm(QWidget):
         for s in (self.sl_b, self.sl_kb, self.sl_mb):
             s.valueChanged.connect(self._update_total)
         self.unlimited.toggled.connect(lambda on: self._update_total())
-        self.append = QCheckBox("追加写入 (不勾选则覆盖)")
+        self.append = SwitchToggle("追加写入 (不开启则覆盖)")
         lay.addWidget(self.append)
         self.rb_send.toggled.connect(self._mode_changed)
         self._mode_changed()
         lay.addStretch(1)
+        # 限速变化回调 (面板连接到 FileSendSource.set_rate 实现动态限速)
+        self.on_rate_change: Optional[callable] = None
+        for s in (self.sl_b, self.sl_kb, self.sl_mb):
+            s.valueChanged.connect(self._notify_rate)
+        self.unlimited.toggled.connect(lambda _: self._notify_rate())
 
     @staticmethod
     def _slider() -> QSlider:
         s = QSlider(Qt.Horizontal)
         s.setRange(0, 1024)
+        s.setMinimumWidth(240)  # 加长滑块, 降低鼠标滑动灵敏度
+        s.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         return s
+
+    def _notify_rate(self):
+        if self.on_rate_change and self.rb_send.isChecked():
+            rate = self.rate_value()
+            self.on_rate_change(rate or None)
 
     def _mode_changed(self):
         sending = self.rb_send.isChecked()
@@ -172,12 +194,16 @@ class FileForm(QWidget):
             self.rate_total.setText("限速未启用 (不限速)")
             return
         total = self.rate_value() or 1  # 全0按 1 B/s
-        self.rate_total.setText(f"限速 {total} B/s")
+        self.rate_total.setText(f"限速 {fmt_rate(total)}")
 
     def rate_value(self) -> int:
         if self.unlimited.isChecked():
             return 0
         return self.sl_b.value() + 1024 * self.sl_kb.value() + 1024 * 1024 * self.sl_mb.value()
+
+    def rate_widgets(self) -> list[QWidget]:
+        """限速相关控件 (打开数据源后仍保持可调)."""
+        return [self.unlimited, self.sl_b, self.sl_kb, self.sl_mb]
 
     def _browse(self):
         if self.rb_send.isChecked():
@@ -220,7 +246,7 @@ class TcpClientForm(QWidget):
         lay.setSpacing(7)
         self.host = QLineEdit("127.0.0.1")
         self.port = QSpinBox(); self.port.setRange(1, 65535); self.port.setValue(9000)
-        lay.addWidget(_row("服务器:", _pair(self.host, QLabel(":"))))
+        lay.addWidget(_row("服务器:", self.host))
         lay.addWidget(_row("端口:", self.port))
         self.local_auto = SwitchToggle("本地 IP:PORT 自动分配")
         self.local_auto.setChecked(True)
@@ -243,6 +269,13 @@ class TcpClientForm(QWidget):
             local_host="" if self.local_auto.isChecked() else self.local_host.currentText().strip(),
             local_port=0 if self.local_auto.isChecked() else self.local_port.value(),
         )
+
+    def on_opened(self, src: TcpClientSource) -> None:
+        # 自动分配时回显实际本地端口
+        if self.local_auto.isChecked() and src.local_port:
+            self.local_port.setSpecialValueText("")
+            self.local_port.setValue(src.local_port)
+            self.local_auto.setEnabled(False)  # 已连接, 不能再切换
 
     def fill(self, kv: dict):
         if "host" in kv:
@@ -283,14 +316,13 @@ class TcpServerForm(QWidget):
 
     def _check(self):
         busy = addr_in_use(self.host.currentText().strip(), self.port.value())
-        QMessageBox.information(self, "检测结果",
-                                f"{self.host.currentText()}:{self.port.value()} "
-                                + ("已被占用" if busy else "可以使用"))
+        msg = (f"{self.host.currentText()}:{self.port.value()} 已被占用"
+               if busy else f"{self.host.currentText()}:{self.port.value()} 可以使用")
+        toast(self.window(), msg, "error" if busy else "success")
 
     def build(self) -> TcpServerSource:
-        src = TcpServerSource(self.host.currentText().strip(), self.port.value(),
-                              backlog=self.backlog.value())
-        return src
+        return TcpServerSource(self.host.currentText().strip(), self.port.value(),
+                               backlog=self.backlog.value())
 
     def fill(self, kv: dict):
         if "host" in kv:
@@ -314,7 +346,10 @@ class UdpForm(QWidget):
         self.bind_port = QSpinBox(); self.bind_port.setRange(0, 65535)
         self.bind_port.setSpecialValueText("自动分配")
         self.bind_port.setValue(0)
-        lay.addWidget(_row("本地地址:", self.bind_host))
+        self.check = QPushButton("检测占用")
+        self.check.setFixedWidth(80)
+        self.check.clicked.connect(self._check)
+        lay.addWidget(_row("本地地址:", _pair(self.bind_host, self.check)))
         lay.addWidget(_row("本地端口:", self.bind_port))
         self.peer_host = QLineEdit()
         self.peer_host.setPlaceholderText("留空 = 收到第一帧数据后自动锁定对端")
@@ -327,6 +362,17 @@ class UdpForm(QWidget):
         lay.addWidget(hint)
         lay.addStretch(1)
 
+    def _check(self):
+        host = self.bind_host.currentText().strip()
+        port = self.bind_port.value()
+        if port == 0:
+            ok = udp_bind_ok(host, 0)
+            msg = f"地址 {host} 可用 (端口自动分配)" if ok else f"地址 {host} 不可用"
+        else:
+            ok = udp_bind_ok(host, port)
+            msg = f"{host}:{port} 已被占用" if not ok else f"{host}:{port} 可以使用"
+        toast(self.window(), msg, "error" if not ok else "success")
+
     def build(self) -> UdpUnicastSource:
         peer_host = self.peer_host.text().strip()
         peer_port = self.peer_port.value()
@@ -337,6 +383,11 @@ class UdpForm(QWidget):
             bind_port=self.bind_port.value(),
             peer_host=peer_host, peer_port=peer_port,
         )
+
+    def on_opened(self, src: UdpUnicastSource) -> None:
+        if src.local_port:  # 自动分配时回显实际端口
+            self.bind_port.setSpecialValueText("")
+            self.bind_port.setValue(src.local_port)
 
     def fill(self, kv: dict):
         if "host" in kv:
@@ -368,23 +419,32 @@ class MulticastForm(QWidget):
         lay.addWidget(hint, alignment=Qt.AlignRight)
         self.port = QSpinBox(); self.port.setRange(1, 65535); self.port.setValue(5000)
         self.ttl = QSpinBox(); self.ttl.setRange(1, 255); self.ttl.setValue(1)
-        row = _row("端口:", self.port, QLabel("TTL:"), self.ttl)
-        lay.addWidget(row)
-        hint2 = QLabel("已自动禁用组播回环 (不会收到自己发出的数据)")
-        hint2.setObjectName("hint")
+        lay.addWidget(_row("端口:", self.port, QLabel("TTL:"), self.ttl))
+        self.local_ip = QComboBox(); self.local_ip.setEditable(True)
+        self.local_ip.addItems(["0.0.0.0"] + [ip for ip in scan_local_addresses()
+                                              if ip != "0.0.0.0"])
+        lay.addWidget(_row("本地接口:", self.local_ip))
+        hint2 = QLabel("本地接口 0.0.0.0 = 系统自动选择网卡; 指定后仅在该网卡收发组播")
+        hint2.setObjectName("hint"); hint2.setWordWrap(True)
         lay.addWidget(hint2)
+        hint3 = QLabel("已自动过滤自己发出的组播回环 (本机其他程序不受影响)")
+        hint3.setObjectName("hint")
+        lay.addWidget(hint3)
         lay.addStretch(1)
 
     def _check(self):
         ok = is_valid_multicast(self.group.text())
-        QMessageBox.information(self, "检测结果", f"{self.group.text()} "
-                                + ("是有效组播地址" if ok else "不是有效组播地址 (范围 224.0.0.0/4)"))
+        msg = (f"{self.group.text()} 是有效组播地址"
+               if ok else f"{self.group.text()} 不是有效组播地址 (范围 224.0.0.0/4)")
+        toast(self.window(), msg, "success" if ok else "error")
 
     def build(self) -> MulticastSource:
         group = self.group.text().strip()
         if not is_valid_multicast(group):
             raise ValueError(f"无效的组播地址: {group} (范围 224.0.0.0/4)")
-        return MulticastSource(group, self.port.value(), ttl=self.ttl.value())
+        return MulticastSource(group, self.port.value(),
+                               local_ip=self.local_ip.currentText().strip(),
+                               ttl=self.ttl.value())
 
     def fill(self, kv: dict):
         if "group" in kv:
@@ -393,6 +453,8 @@ class MulticastForm(QWidget):
             self.port.setValue(int(kv["port"]))
         if "ttl" in kv:
             self.ttl.setValue(int(kv["ttl"]))
+        if kv.get("local_host"):
+            self.local_ip.setCurrentText(kv["local_host"])
 
 
 class BroadcastForm(QWidget):
@@ -411,7 +473,7 @@ class BroadcastForm(QWidget):
         lay.addWidget(_row("广播地址:", self.addr))
         lay.addWidget(_row("广播端口:", self.port))
         lay.addWidget(_row("本地端口:", self.local_port))
-        hint = QLabel("广播地址按网卡自动填充 (如 192.168.10.255), 也可手动输入")
+        hint = QLabel("广播地址按网卡自动填充 (如 192.168.10.255), 也可手动输入; 已过滤自己的回环")
         hint.setObjectName("hint"); hint.setWordWrap(True)
         lay.addWidget(hint)
         lay.addStretch(1)
@@ -419,6 +481,11 @@ class BroadcastForm(QWidget):
     def build(self) -> BroadcastSource:
         return BroadcastSource(addr=self.addr.currentText().strip(), port=self.port.value(),
                                local_port=self.local_port.value())
+
+    def on_opened(self, src: BroadcastSource) -> None:
+        if src.local_port:
+            self.local_port.setSpecialValueText("")
+            self.local_port.setValue(src.local_port)
 
     def fill(self, kv: dict):
         if "addr" in kv:
