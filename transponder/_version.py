@@ -7,7 +7,7 @@
 
 import sys
 
-__version__ = "6.5"
+__version__ = "6.5.1"
 
 _cached: str | None = None
 

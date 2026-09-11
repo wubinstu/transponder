@@ -90,10 +90,12 @@ QSpinBox::up-arrow {{ image: url({_url(f"spin-up-{t['name']}.png")}); width: 10p
 QSpinBox::down-arrow {{ image: url({_url(f"spin-down-{t['name']}.png")}); width: 10px; height: 8px; }}
 /* SpinBox 内嵌行编辑去边框 (与可编辑下拉一致, 避免圆角叠加) */
 QSpinBox QLineEdit {{ background: transparent; border: none; padding: 0 2px; color: {t['text']}; }}
-/* 占位提示: 数值框处于最小值(自动/默认)或占位行编辑, 用淡色斜体 */
+/* 占位提示: 数值框处于最小值(自动/默认)或行编辑为空时, 用淡色斜体;
+   用户输入实际内容后恢复正常样式 (empty 属性随内容切换) */
 QSpinBox[placeholder="true"], QSpinBox[placeholder="true"] QLineEdit,
-QLineEdit#placeholderInput {{ color: {t['text_dim']}; font-style: italic; }}
-QSpinBox[placeholder="true"] QLineEdit:focus {{ color: {t['text']}; font-style: normal; }}
+QLineEdit#placeholderInput[empty="true"] {{ color: {t['text_dim']}; font-style: italic; }}
+QSpinBox[placeholder="true"] QLineEdit:focus,
+QLineEdit#placeholderInput[empty="true"]:focus {{ color: {t['text']}; font-style: normal; }}
 
 QPushButton {{
     background: {t['card2']}; border: 1px solid {t['border2']}; border-radius: {rb};

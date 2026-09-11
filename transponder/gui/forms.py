@@ -384,6 +384,17 @@ class UdpForm(QWidget):
         self.peer_host = QLineEdit()
         self.peer_host.setPlaceholderText("留空 = 收到第一帧数据后自动锁定对端")
         self.peer_host.setObjectName("placeholderInput")
+        # 占位样式只在内容为空时生效: 输入实际内容后恢复正常文字样式
+        self.peer_host.setProperty("empty", True)
+
+        def _sync_peer_empty(text: str):
+            on = not text
+            if self.peer_host.property("empty") != on:
+                self.peer_host.setProperty("empty", on)
+                self.peer_host.style().unpolish(self.peer_host)
+                self.peer_host.style().polish(self.peer_host)
+
+        self.peer_host.textChanged.connect(_sync_peer_empty)
         self.peer_port = PlaceholderSpinBox("自动"); self.peer_port.setRange(0, 65535)
         lay.addWidget(_row("对端地址:", self.peer_host))
         lay.addWidget(_row("对端端口:", self.peer_port))

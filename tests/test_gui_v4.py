@@ -139,4 +139,17 @@ combo_xs = sorted({f.mapTo(serial_form, f.rect().topLeft()).x()
 assert len(combo_xs) == 1, f"输入框列未对齐: {combo_xs}"
 assert combo_xs[0] > xs[0], f"输入框应位于标签列右侧: label={xs[0]}, combo={combo_xs[0]}"
 print(f"TEST8 串口表单标签/输入框列对齐 PASS (label x={xs[0]}, combo x={combo_xs[0]})")
+
+# ---- 9. UDP对端地址 hint 样式动态切换 (输入后正常, 仅 hint 淡色斜体) --------
+win.panel_m.type_combo.setCurrentIndex(4)
+fu = win.panel_m.stack.currentWidget()
+ph = fu.peer_host
+assert ph.property("empty") is True and ph.font().italic(), "空(hint)应为斜体"
+ph.setText("192.168.1.9")
+app.processEvents()
+assert ph.property("empty") is False and not ph.font().italic(), "输入后应恢复正常样式"
+ph.clear()
+app.processEvents()
+assert ph.property("empty") is True and ph.font().italic(), "清空后应回到占位样式"
+print("TEST9 hint样式动态切换 PASS")
 print("ALL PASS")
