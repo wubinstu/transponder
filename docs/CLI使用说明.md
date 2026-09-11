@@ -4,14 +4,11 @@
 
 ## 1. 运行方式
 
+命令行版本通过**源码**运行 (exe 专用于 GUI, 不提供命令行模式):
+
 ```bash
-# 源码运行
 python -m transponder --help
 python -m transponder --nogui -m <SPEC> -w <SPEC>
-
-# exe (双击=GUI; 在终端里带参数=命令行)
-MWTransponder.exe --help
-MWTransponder.exe --nogui -m <SPEC> -w <SPEC>
 ```
 
 单次运行式: 参数即配置, 立即开始转发; `Ctrl+C` 或 `--duration 秒数` 停止退出;

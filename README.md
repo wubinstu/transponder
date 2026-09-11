@@ -83,11 +83,10 @@ pyinstaller -F -w -n MWTransponder \
   run.py
 ```
 
-产物 `dist/MWTransponder.exe`:
-- **双击** → 直接打开 GUI (无控制台窗口弹出)
-- **终端里带参数** → 自动附加父控制台, 正常使用命令行模式 (输出/退出码可用)
-- **被脚本/agent 以管道调用** → stdout/stderr 天然可用
-- 打包前更新 `transponder/_version.py` (与 git tag 保持一致)
+产物 `dist/MWTransponder.exe` **专用于 GUI**: 双击(或带参数启动)直接打开图形界面,
+无控制台黑框。命令行模式请使用源码方式 `python -m transponder --nogui ...`
+(窗口子系统 exe 在不同终端下恢复控制台输出的行为不一致, 不再支持)。
+打包前更新 `transponder/_version.py` (与 git tag 保持一致)。
 
 ## 目录结构
 
