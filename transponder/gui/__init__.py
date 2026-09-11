@@ -5,6 +5,22 @@ from __future__ import annotations
 import os
 import sys
 
+# Qt 字体回退的提示性日志 (显示二进制乱码文本时批量出现), 无碍功能, 予以过滤
+_IGNORED_QT_LOGS = ("qt.text.font.db", "qt.qpa.fonts")
+
+
+def _install_log_filter() -> None:
+    from PySide6.QtCore import qInstallMessageHandler
+
+    def handler(msg_type, context, message):
+        if any(message.startswith(tag) or tag in message.split(":")[0]
+               for tag in _IGNORED_QT_LOGS):
+            return
+        # 其余日志走默认输出
+        sys.stderr.write(message + "\n")
+
+    qInstallMessageHandler(handler)
+
 
 def run_gui(args=None) -> int:
     try:
@@ -19,6 +35,8 @@ def run_gui(args=None) -> int:
         print(f"错误: 当前系统无图形化环境, 无法启动 UI ({e}); "
               f"可加 --nogui 使用命令行模式", file=sys.stderr)
         return 3
+
+    _install_log_filter()
 
     app.setStyle("Fusion")
     from .theme import apply_theme, ASSET_DIR

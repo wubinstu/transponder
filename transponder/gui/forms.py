@@ -12,7 +12,7 @@ from typing import Optional
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QComboBox, QPushButton, QLabel,
+    QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QPushButton, QLabel,
     QLineEdit, QSpinBox, QFileDialog, QSlider, QRadioButton, QButtonGroup,
     QSizePolicy,
 )
@@ -62,11 +62,8 @@ class SerialForm(QWidget):
         btn = QPushButton("刷新")
         btn.setMinimumWidth(72)
         btn.clicked.connect(self.refresh_ports)
-        lay.addWidget(_row("串口:", _pair(self.port, btn)))
-        grid = QGridLayout()
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(6)
-        grid.setVerticalSpacing(7)
+        lay.addWidget(_row("串   口:", _pair(self.port, btn)))
+        # 参数行复用 _row: 与"串口:"行相同的列宽/对齐, 标签列与输入框列都对齐
         self.baud = QComboBox(); self.baud.setMinimumWidth(160); self.baud.setEditable(True)
         self.baud.addItems(["9600", "19200", "38400", "57600", "115200", "230400", "460800", "921600"])
         self.baud.setCurrentText("115200")
@@ -74,16 +71,10 @@ class SerialForm(QWidget):
         self.parity = QComboBox(); self.parity.addItems(["无", "偶", "奇"])
         self.stop_bits = QComboBox(); self.stop_bits.addItems(["1", "2"])
         self.flow = QComboBox(); self.flow.addItems(["无", "RTS/CTS"])
-        for row, (lab, f) in enumerate([
-                ("波特率", self.baud), ("数据位", self.data_bits), ("校验", self.parity),
-                ("停止位", self.stop_bits), ("流控", self.flow)]):
-            label = QLabel(lab)
-            label.setMinimumWidth(60)
-            label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            grid.addWidget(label, row, 0)
-            grid.addWidget(f, row, 1)
-        grid.setColumnStretch(1, 1)
-        lay.addLayout(grid)
+        for lab, f in [("波特率:", self.baud), ("数据位:", self.data_bits),
+                       ("校   验:", self.parity), ("停止位:", self.stop_bits),
+                       ("流   控:", self.flow)]:
+            lay.addWidget(_row(lab, f))
         lay.addStretch(1)
         self.refresh_ports()
 
@@ -469,7 +460,7 @@ class MulticastForm(QWidget):
             text = QLabel(label); text.setMinimumWidth(32); text.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
             row.addWidget(text); row.addWidget(field, 1)
             return box
-        port_row.addWidget(half("端口:", self.port), 1)
+        port_row.addWidget(half("组播端口: ", self.port), 1)
         port_row.addWidget(half("TTL:", self.ttl), 1)
         lay.addLayout(port_row)
         self.local_ip = QComboBox(); self.local_ip.setEditable(True)

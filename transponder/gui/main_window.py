@@ -56,7 +56,11 @@ class PreviewPane(QGroupBox):
         self.view = QTextEdit()
         self.view.setReadOnly(True)
         self.view.setAcceptRichText(False)  # 纯文本显示, 原样呈现 (避免 <>& 被当富文本)
-        self.view.setFont(QFont("Consolas, Courier New", 9))
+        mono = QFont()
+        mono.setFamilies(["Consolas", "Courier New", "Courier"])  # 字体族列表, 非单个名
+        mono.setStyleHint(QFont.Monospace)
+        mono.setPointSize(9)
+        self.view.setFont(mono)
         lay.addWidget(self.view, 1)
         # 分侧落地记录配置 (basedir 共用, 放在主窗口控制条)
         rec = QHBoxLayout()

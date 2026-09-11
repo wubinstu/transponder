@@ -112,4 +112,31 @@ assert "已打开" in log_text, "打开摘要缺失"
 c.close()
 srv_panel.close_source()
 print("TEST6 状态消息进事件日志 PASS")
+# ---- 7. 预览字体族正确 (逗号连写的单字体名是 v6.2 前的 bug, 会引发字体回退告警刷屏) ----
+families = win.pane_m.view.font().families()
+assert "Consolas" in families and not any("," in f for f in families), families
+# TXT 模式灌入二进制乱码不应异常 (字体回退仅是提示)
+win.pane_m.txt_rb.setChecked(True)
+win.pane_m.append(bytes(range(0, 256)) * 4)
+app.processEvents()
+print("TEST7 预览字体族 PASS:", families)
+
+# ---- 8. 串口表单标签列对齐 (与"串口:"行同列同对齐) --------------------------
+# 离屏下复用旧窗口会有嵌套布局未激活的陈旧几何, 用全新窗口验证
+win2 = MainWindow()
+win2.panel_m.type_combo.setCurrentIndex(0)
+win2.show()
+app.processEvents()
+serial_form = win2.panel_m.stack.currentWidget()
+serial_form.layout().activate()
+app.processEvents()
+from PySide6.QtWidgets import QLabel, QComboBox
+labels = [l for l in serial_form.findChildren(QLabel) if l.text()]
+xs = sorted({l.mapTo(serial_form, l.rect().topLeft()).x() for l in labels})
+assert len(xs) == 1, f"标签列未对齐: {[(l.text(), l.mapTo(serial_form, l.rect().topLeft()).x()) for l in labels]}"
+combo_xs = sorted({f.mapTo(serial_form, f.rect().topLeft()).x()
+                   for f in serial_form.findChildren(QComboBox)})
+assert len(combo_xs) == 1, f"输入框列未对齐: {combo_xs}"
+assert combo_xs[0] > xs[0], f"输入框应位于标签列右侧: label={xs[0]}, combo={combo_xs[0]}"
+print(f"TEST8 串口表单标签/输入框列对齐 PASS (label x={xs[0]}, combo x={combo_xs[0]})")
 print("ALL PASS")
