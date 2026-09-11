@@ -26,6 +26,7 @@ from ..core import (
     is_valid_multicast, udp_bind_ok,
 )
 from .theme import SwitchToggle, toast, PlaceholderSpinBox
+from .util import fmt_rate
 
 
 def _row(label: str, *fields: QWidget, stretch_last=True) -> QWidget:
@@ -47,14 +48,6 @@ def _pair(field: QWidget, button: QWidget) -> QWidget:
     h.addWidget(field, 1)
     h.addWidget(button)
     return w
-
-
-def fmt_rate(bps: float) -> str:
-    """限速显示: 智能单位, 保留两位小数."""
-    for unit, factor in (("B", 1), ("KB", 1024), ("MB", 1024 * 1024)):
-        if bps < 1024 * factor:
-            return f"{bps / factor:.2f} {unit}/s"
-    return f"{bps / 1024**3:.2f} GB/s"
 
 
 class SerialForm(QWidget):
@@ -304,14 +297,14 @@ class TcpClientForm(QWidget):
     def on_opened(self, src: TcpClientSource) -> None:
         # 自动分配时回显实际本地端口 (仅显示, 关闭后恢复自动)
         if self.local_auto.isChecked() and src.local_port:
-            self._shown_port = src.local_port
+            self._auto_filled = src.local_port
             self.local_port.setValue(src.local_port)
             self.local_auto.setEnabled(False)  # 已连接, 不能再切换
 
     def sync_states_after_close(self) -> None:
-        if getattr(self, "_shown_port", None):
+        if getattr(self, "_auto_filled", None):
             self.local_port.setValue(0)  # 恢复"自动"占位, 避免下次误绑固定端口
-            self._shown_port = None
+            self._auto_filled = None
         self.sync_states()
 
     def fill(self, kv: dict):
@@ -351,9 +344,15 @@ class TcpServerForm(QWidget):
         lay.addStretch(1)
 
     def on_opened(self, src: TcpServerSource) -> None:
-        # "默认"时打开后回显实际使用的监听队列大小
+        # "默认"时打开后回显实际使用的监听队列大小 (关闭时恢复)
         if self.backlog.value() == 0:
-            self.backlog.setValue(src.backlog or 5)
+            self._auto_filled = src.backlog or 5
+            self.backlog.setValue(self._auto_filled)
+
+    def sync_states_after_close(self) -> None:
+        if getattr(self, "_auto_filled", None):
+            self.backlog.setValue(0)  # 恢复"默认"占位
+            self._auto_filled = None
 
     def _check(self):
         busy = addr_in_use(self.host.currentText().strip(), self.port.value())
@@ -425,7 +424,13 @@ class UdpForm(QWidget):
 
     def on_opened(self, src: UdpUnicastSource) -> None:
         if src.local_port and self.bind_port.value() == 0:  # 自动分配时回显实际端口
+            self._auto_filled = src.local_port
             self.bind_port.setValue(src.local_port)
+
+    def sync_states_after_close(self) -> None:
+        if getattr(self, "_auto_filled", None):
+            self.bind_port.setValue(0)  # 恢复"自动分配", 避免重开误绑固定端口
+            self._auto_filled = None
 
     def fill(self, kv: dict):
         if "host" in kv:
@@ -530,7 +535,13 @@ class BroadcastForm(QWidget):
 
     def on_opened(self, src: BroadcastSource) -> None:
         if src.local_port and self.local_port.value() == 0:
+            self._auto_filled = src.local_port
             self.local_port.setValue(src.local_port)
+
+    def sync_states_after_close(self) -> None:
+        if getattr(self, "_auto_filled", None):
+            self.local_port.setValue(0)  # 恢复"自动分配"
+            self._auto_filled = None
 
     def fill(self, kv: dict):
         if "addr" in kv:

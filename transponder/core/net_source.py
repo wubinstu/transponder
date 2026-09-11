@@ -206,6 +206,7 @@ class TcpServerSource(DataSource):
         self.backlog = backlog  # 0 = 系统默认
         self._listen: Optional[socket.socket] = None
         self._clients: dict[str, socket.socket] = {}  # addr -> conn
+        self._client_threads: dict[str, threading.Thread] = {}  # addr -> 读取线程
         self._clients_lock = threading.Lock()
         self._accept_thread: Optional[threading.Thread] = None
         self._closing = threading.Event()  # 不用 self.opened 判断: 它在 open() 尾部才置位, 线程启动时有竞态
@@ -251,13 +252,15 @@ class TcpServerSource(DataSource):
             conn.settimeout(0.2)
             with self._clients_lock:
                 self._clients[key] = conn
+                t = threading.Thread(target=self._client_loop, args=(conn, key),
+                                     name=f"tcp-read-{key}", daemon=True)
+                self._client_threads[key] = t
             self._has_client.set()
             self._add_peer(key)
             self._apply_desired(key)
             self._emit_state(f"客户端 {key} 已接入")
             self._emit_peers()
-            threading.Thread(target=self._client_loop, args=(conn, key),
-                             name=f"tcp-read-{key}", daemon=True).start()
+            t.start()
 
     def _client_loop(self, conn: socket.socket, key: str) -> None:
         """单客户端读取线程."""
@@ -288,6 +291,10 @@ class TcpServerSource(DataSource):
                 conn.close()
             except OSError:
                 pass
+        with self._clients_lock:
+            self._client_threads.pop(key, None)
+        if self._closing.is_set():
+            return  # 关闭过程中不再发回调 (UI 可能已销毁)
         self._remove_peer(key)
         if self.primary_peer == key:
             self.primary_peer = None
@@ -333,9 +340,18 @@ class TcpServerSource(DataSource):
             self._clients.clear()
         for conn in conns:
             try:
-                conn.close()
+                conn.close()  # 关闭连接促使读取线程尽快退出
             except OSError:
                 pass
+        # 等待 accept/客户端读取线程退出, 避免关闭后仍触发回调
+        threads = [self._accept_thread] if self._accept_thread else []
+        with self._clients_lock:
+            threads += list(self._client_threads.values())
+            self._client_threads.clear()
+        if threading.current_thread() not in threads:
+            for t in threads:
+                if t is not threading.current_thread():
+                    t.join(timeout=1.0)
         with self._peer_lock:
             self._peers.clear()
 

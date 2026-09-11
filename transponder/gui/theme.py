@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import time
 
 from PySide6.QtCore import QPropertyAnimation, QRectF, QPointF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPalette
@@ -89,9 +88,14 @@ QSpinBox::up-button {{ subcontrol-position: top right; border-bottom: none; }}
 QSpinBox::down-button {{ subcontrol-position: bottom right; border-top: none; }}
 QSpinBox::up-arrow {{ image: url({_url(f"spin-up-{t['name']}.png")}); width: 10px; height: 8px; }}
 QSpinBox::down-arrow {{ image: url({_url(f"spin-down-{t['name']}.png")}); width: 10px; height: 8px; }}
-/* 最小值占位提示 (清空输入=自动/默认), 用淡色斜体显示 */
-QLineEdit[placeholderText="true"], QLineEdit#placeholderInput {{ color: {t['text_dim']}; font-style: italic; }}
-QLineEdit#placeholderInput:focus {{ color: {t['text']}; font-style: normal; }}
+/* SpinBox 内嵌行编辑去边框 (与可编辑下拉一致, 避免圆角叠加) */
+QSpinBox QLineEdit {{ background: transparent; border: none; padding: 0 2px; color: {t['text']}; }}
+/* 占位提示: 数值框处于最小值(自动/默认)或占位行编辑, 用淡色斜体 */
+QSpinBox[placeholder="true"], QSpinBox[placeholder="true"] QLineEdit,
+QLineEdit#placeholderInput {{ color: {t['text_dim']}; font-style: italic; }}
+QSpinBox[placeholder="true"] QLineEdit:focus {{ color: {t['text']}; font-style: normal; }}
+
+QPushButton {{
     background: {t['card2']}; border: 1px solid {t['border2']}; border-radius: {rb};
     padding: 6px 16px; font-weight: 600; color: {t['text']};
 }}

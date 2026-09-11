@@ -17,10 +17,11 @@ from PySide6.QtWidgets import (
     QSplitter, QFrame, QRadioButton, QSizePolicy,
 )
 
-from ..core import Bridge, LogSession, SourceLog, FileRecvSource, FileSendSource
+from ..core import Bridge, LogSession, FileRecvSource, FileSendSource, SerialSource
 from .forms import SOURCE_TYPES
 from .source_panel import SourcePanel
 from .theme import SwitchToggle, apply_theme, toast, ASSET_DIR
+from .util import fmt_bytes
 
 PREVIEW_LIMIT = 400  # 每侧预览最多保留行数
 EVENT_TS = "%H:%M:%S"  # 事件日志时间戳 (毫秒另行拼接, 统一宽度)
@@ -103,8 +104,8 @@ class PreviewPane(QGroupBox):
             if len(data) > 256:
                 text += f"  …(共{len(data)}字节)"
         else:
-            # TXT 模式才"翻译" (控制字符等按文本呈现)
-            text = data[:256].decode("utf-8", errors="replace").rstrip("\n")
+            # TXT 模式才"翻译" (按文本原样呈现, 保留数据中的换行)
+            text = data[:256].decode("utf-8", errors="replace")
         self.view.moveCursor(QTextCursor.End)
         self.view.insertPlainText(text + "\n")
         sb = self.view.verticalScrollBar()
@@ -174,10 +175,12 @@ class MainWindow(QMainWindow):
         head.addWidget(self.theme_btn)
         root.addLayout(head)
 
-        # M / W 面板
+        # M / W 面板 (状态消息统一投递事件日志)
         splitter = QSplitter(Qt.Horizontal)
         self.panel_m = SourcePanel("数据源 M")
         self.panel_w = SourcePanel("数据源 W")
+        self.panel_m.on_event = lambda msg: self._uiq.put(("event", msg))
+        self.panel_w.on_event = lambda msg: self._uiq.put(("event", msg))
         self.panel_m.on_source_opened = lambda src: self._log(f"数据源 M 已打开: {self._source_summary(src)}")
         self.panel_w.on_source_opened = lambda src: self._log(f"数据源 W 已打开: {self._source_summary(src)}")
         splitter.addWidget(self.panel_m)
@@ -235,6 +238,7 @@ class MainWindow(QMainWindow):
         self.event_view.setReadOnly(True)
         self.event_view.setMaximumHeight(120)
         self.event_paused = False
+        self._event_buffer: list[str] = []
         self.event_pause_btn = QPushButton("暂停")
         self.event_export_btn = QPushButton("导出")
         self.event_clear_btn = QPushButton("清空")
@@ -319,8 +323,8 @@ class MainWindow(QMainWindow):
         if self.bridge:
             stats = self.bridge.stats_m2w if side == "M" else self.bridge.stats_w2m
             stats.reset()
-            pane = self.pane_m if side == "M" else self.pane_w
-            pane.rate_lbl.setText("速率 0 B/s  |  共 0 B")
+        pane = self.pane_m if side == "M" else self.pane_w
+        pane.rate_lbl.setText(self._stats_text(side, 0, 0.0))
 
     def _start(self):
         if not (self.panel_m.source and self.panel_w.source):
@@ -378,8 +382,8 @@ class MainWindow(QMainWindow):
         if self.bridge:
             tm, _ = self.bridge.stats_m2w.snapshot()
             tw, _ = self.bridge.stats_w2m.snapshot()
-            self.pane_m.rate_lbl.setText(f"速率 0 B/s  |  共 {_fmt_rate(tm)}")
-            self.pane_w.rate_lbl.setText(f"速率 0 B/s  |  共 {_fmt_rate(tw)}")
+            self.pane_m.rate_lbl.setText(self._stats_text("M", tm, 0.0))
+            self.pane_w.rate_lbl.setText(self._stats_text("W", tw, 0.0))
         # 立刻释放落地记录文件句柄 (不再占用日志文件与时间戳文件夹)
         if self.session:
             self.session.close()
@@ -396,6 +400,10 @@ class MainWindow(QMainWindow):
     def _toggle_event_pause(self):
         self.event_paused = not self.event_paused
         self.event_pause_btn.setText("继续" if self.event_paused else "暂停")
+        if not self.event_paused:  # 恢复: 补显暂停期间缓存的事件
+            for line in self._event_buffer:
+                self.event_view.append(line)
+            self._event_buffer.clear()
 
     def _export_events(self):
         path, _ = QFileDialog.getSaveFileName(self, "导出事件日志", "events.txt", "文本文件 (*.txt);;所有文件 (*)")
@@ -417,6 +425,17 @@ class MainWindow(QMainWindow):
         super().closeEvent(ev)
 
     # ---- 回调/刷新 -------------------------------------------------------
+    EVENT_BUFFER_LIMIT = 5000  # 暂停期间最多缓存的事件行数 (超出丢弃最旧)
+
+    def _append_event(self, line: str) -> None:
+        """事件入日志; 暂停期间缓存到缓冲区, 恢复后补显 (不丢失)."""
+        if self.event_paused:
+            self._event_buffer.append(line)
+            if len(self._event_buffer) > self.EVENT_BUFFER_LIMIT:
+                self._event_buffer.pop(0)
+        else:
+            self.event_view.append(line)
+
     def _drain_uiq(self):
         """把转发线程投递的事件/预览数据搬到 UI (仅本函数在 UI 线程操作控件)."""
         for _ in range(self.PUMP_BATCH):
@@ -426,8 +445,7 @@ class MainWindow(QMainWindow):
                 break
             kind = item[0]
             if kind == "event":
-                if not self.event_paused:
-                    self.event_view.append(self._ts() + "  " + item[1])
+                self._append_event(self._ts() + "  " + item[1])
             elif kind == "preview":
                 (self.pane_m if item[1] == "M" else self.pane_w).append(item[2])
 
@@ -438,26 +456,29 @@ class MainWindow(QMainWindow):
         return time.strftime(EVENT_TS, time.localtime(now)) + f".{int(now * 1000) % 1000:03d}"
 
     def _log(self, msg: str):
-        """UI 线程内直接记录事件 (如预填充提示)."""
-        self.event_view.append(self._ts() + "  " + msg)
+        """UI 线程内直接记录事件 (如预填充提示); 同样遵循暂停缓存."""
+        self._append_event(self._ts() + "  " + msg)
+
+    def _stats_text(self, side: str, total: int, rate: float) -> str:
+        """单侧统计文本; 串口源附加带宽占用百分比 (按波特率推算理论上限)."""
+        text = f"速率 {fmt_bytes(rate)}/s  |  共 {fmt_bytes(total)}"
+        src = (self.panel_m if side == "M" else self.panel_w).source
+        if isinstance(src, SerialSource):
+            bits = 1 + src.bytesize + (1 if src.parity != "无" else 0) + src.stopbits
+            limit = src.baudrate / bits
+            if limit > 0:
+                text += f"  |  带宽 {min(rate / limit * 100, 999):.1f}%"
+        return text
 
     def _update_stats(self):
         if not self.bridge:
             return
         tm, rm = self.bridge.stats_m2w.snapshot()
         tw, rw = self.bridge.stats_w2m.snapshot()
-        self.pane_m.rate_lbl.setText(f"速率 {_fmt_rate(rm)}/s  |  共 {_fmt_rate(tm)}")
-        self.pane_w.rate_lbl.setText(f"速率 {_fmt_rate(rw)}/s  |  共 {_fmt_rate(tw)}")
+        self.pane_m.rate_lbl.setText(self._stats_text("M", tm, rm))
+        self.pane_w.rate_lbl.setText(self._stats_text("W", tw, rw))
 
     def _browse_dir(self):
         path = QFileDialog.getExistingDirectory(self, "选择落地记录根目录")
         if path:
             self.log_dir.setText(path)
-
-
-def _fmt_rate(n: float) -> str:
-    for unit in ("B", "KB", "MB", "GB"):
-        if n < 1024:
-            return f"{n:.1f} {unit}" if unit != "B" else f"{int(n)} B"
-        n /= 1024
-    return f"{n:.1f} TB"
