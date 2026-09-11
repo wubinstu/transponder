@@ -26,6 +26,7 @@ class SourcePanel(QGroupBox):
     def __init__(self, title: str):
         super().__init__(title)
         self.source: Optional[DataSource] = None
+        self.on_source_opened = None
         self.sig = PanelSignals()
         self.sig.state.connect(self._set_status)
         self.sig.peers_changed.connect(self._refresh_peers)
@@ -73,6 +74,8 @@ class SourcePanel(QGroupBox):
             try: hook(src)
             except Exception: pass
         self._update_dynamic_widgets()
+        if self.on_source_opened:
+            self.on_source_opened(src)
 
     def close_source(self):
         if self.source: self.source.close()

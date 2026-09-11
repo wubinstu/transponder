@@ -172,6 +172,7 @@ def _palette(t: dict) -> QPalette:
     pal.setColor(QPalette.Base, QColor(t["card2"]))
     pal.setColor(QPalette.AlternateBase, QColor(t["card"]))
     pal.setColor(QPalette.Text, QColor(t["text"]))
+    pal.setColor(QPalette.PlaceholderText, QColor(t["text_dim"]))
     pal.setColor(QPalette.Button, QColor(t["card2"]))
     pal.setColor(QPalette.ButtonText, QColor(t["text"]))
     pal.setColor(QPalette.Highlight, QColor(t["sel_bg"]))

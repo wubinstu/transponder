@@ -39,6 +39,13 @@ class TrafficStats:
                 self._recalc(time.monotonic())
             return self.total, self.rate
 
+    def reset(self) -> None:
+        with self._lock:
+            self.total = 0
+            self.rate = 0.0
+            self._window.clear()
+            self._last_calc = time.monotonic()
+
 
 class SourceLog:
     """单侧数据源的落地记录.

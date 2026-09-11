@@ -81,12 +81,18 @@ class PreviewPane(QGroupBox):
         rec.addStretch(1)
         lay.addLayout(rec)
         self.paused = False
+        self.on_clear = None
         self.pause_btn.clicked.connect(self._toggle_pause)
-        self.clear_btn.clicked.connect(self.view.clear)
+        self.clear_btn.clicked.connect(self._clear)
 
     def _toggle_pause(self):
         self.paused = not self.paused
         self.pause_btn.setText("继续" if self.paused else "暂停")
+
+    def _clear(self):
+        self.view.clear()
+        if self.on_clear:
+            self.on_clear()
 
     def append(self, data: bytes):
         if not self.show_sw.isChecked() or self.paused:
@@ -172,6 +178,8 @@ class MainWindow(QMainWindow):
         splitter = QSplitter(Qt.Horizontal)
         self.panel_m = SourcePanel("数据源 M")
         self.panel_w = SourcePanel("数据源 W")
+        self.panel_m.on_source_opened = lambda src: self._log(f"数据源 M 已打开: {self._source_summary(src)}")
+        self.panel_w.on_source_opened = lambda src: self._log(f"数据源 W 已打开: {self._source_summary(src)}")
         splitter.addWidget(self.panel_m)
         splitter.addWidget(self.panel_w)
         splitter.setHandleWidth(14)
@@ -210,6 +218,8 @@ class MainWindow(QMainWindow):
         prev = QSplitter(Qt.Horizontal)
         self.pane_m = PreviewPane("M 数据预览")
         self.pane_w = PreviewPane("W 数据预览")
+        self.pane_m.on_clear = lambda: self._clear_stats("M")
+        self.pane_w.on_clear = lambda: self._clear_stats("W")
         prev.addWidget(self.pane_m)
         prev.addWidget(self.pane_w)
         prev.setHandleWidth(14)
@@ -295,6 +305,23 @@ class MainWindow(QMainWindow):
                 pane.rec_ts.setValue(int(pf[pf_key]))
 
     # ---- 转发控制 -------------------------------------------------------
+    @staticmethod
+    def _source_summary(src) -> str:
+        parts = []
+        for key in ("port", "host", "local_host", "local_port", "bind_host", "bind_port", "peer_host", "peer_port", "group", "bcast_addr", "path", "baudrate", "bytesize", "parity", "stopbits", "backlog"):
+            if hasattr(src, key):
+                value = getattr(src, key)
+                if value not in (None, "", 0):
+                    parts.append(f"{key}={value}")
+        return src.name + (" (" + ", ".join(parts) + ")" if parts else "")
+
+    def _clear_stats(self, side: str):
+        if self.bridge:
+            stats = self.bridge.stats_m2w if side == "M" else self.bridge.stats_w2m
+            stats.reset()
+            pane = self.pane_m if side == "M" else self.pane_w
+            pane.rate_lbl.setText("速率 0 B/s  |  共 0 B")
+
     def _start(self):
         if not (self.panel_m.source and self.panel_w.source):
             toast(self, "请先打开两个数据源 (M 和 W)", "error")
