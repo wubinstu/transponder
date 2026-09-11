@@ -73,10 +73,12 @@ def _iface_infos() -> list[IfaceInfo]:
     except Exception:
         pass
     # 回退: 解析 ip / ipconfig 输出 (仅地址, 无掩码则无广播地址)
+    # CREATE_NO_WINDOW: 防止窗口程序(GUI/exe)调用时闪黑色控制台
     try:
         cmd = ["ipconfig"] if _is_windows() else ["ip", "-4", "addr"]
-        out = subprocess.run(cmd, capture_output=True, timeout=3
-                             ).stdout.decode(errors="replace")
+        no_window = subprocess.CREATE_NO_WINDOW if _is_windows() else 0
+        out = subprocess.run(cmd, capture_output=True, timeout=3,
+                             creationflags=no_window).stdout.decode(errors="replace")
         for m in re.finditer(r"(\d+\.\d+\.\d+\.\d+)[^\n]*?(\d+\.\d+\.\d+\.\d+)?", out):
             ip = m.group(1)
             if not ip.startswith("127."):
