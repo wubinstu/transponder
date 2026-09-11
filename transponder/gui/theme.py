@@ -90,10 +90,8 @@ QSpinBox::down-button {{ subcontrol-position: bottom right; border-top: none; }}
 QSpinBox::up-arrow {{ image: url({_url(f"spin-up-{t['name']}.png")}); width: 10px; height: 8px; }}
 QSpinBox::down-arrow {{ image: url({_url(f"spin-down-{t['name']}.png")}); width: 10px; height: 8px; }}
 /* 最小值占位提示 (清空输入=自动/默认), 用淡色斜体显示 */
-QSpinBox[placeholder="true"] {{ color: {t['text_dim']}; font-style: italic; }}
-QSpinBox[placeholder="true"] QLineEdit {{ color: {t['text_dim']}; font-style: italic; }}
-
-QPushButton {{
+QLineEdit[placeholderText="true"], QLineEdit#placeholderInput {{ color: {t['text_dim']}; font-style: italic; }}
+QLineEdit#placeholderInput:focus {{ color: {t['text']}; font-style: normal; }}
     background: {t['card2']}; border: 1px solid {t['border2']}; border-radius: {rb};
     padding: 6px 16px; font-weight: 600; color: {t['text']};
 }}

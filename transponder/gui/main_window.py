@@ -164,7 +164,7 @@ class MainWindow(QMainWindow):
         title.setObjectName("title")
         head.addWidget(title)
         head.addStretch(1)
-        self.style_btn = QPushButton("切换为直角" if self._rounded else "切换为圆角")
+        self.style_btn = QPushButton("直角" if self._rounded else "圆角")
         self.style_btn.setFixedWidth(88)
         self.style_btn.clicked.connect(self._toggle_style)
         head.addWidget(self.style_btn)
@@ -268,7 +268,7 @@ class MainWindow(QMainWindow):
     def _toggle_style(self):
         self._rounded = not self._rounded
         apply_theme(self._theme, self._rounded)
-        self.style_btn.setText("切换为直角" if self._rounded else "切换为圆角")
+        self.style_btn.setText("直角" if self._rounded else "圆角")
 
     # ---- 参数预填充 (命令行带参启动GUI) --------------------------------
     def _apply_prefill(self, pf: dict):
