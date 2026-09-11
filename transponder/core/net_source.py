@@ -20,9 +20,17 @@ def _is_windows() -> bool:
     return sys.platform.startswith("win")
 
 
-def scan_local_addresses() -> list[str]:
-    """本机 IPv4 地址列表 (供绑定地址下拉框), 固定包含 0.0.0.0 与 127.0.0.1."""
-    ips = ["0.0.0.0", "127.0.0.1"]
+def _is_link_local(ip: str) -> bool:
+    """是否为链路本地地址 (169.254.0.0/16, DHCP 失败自动配置/虚拟网卡, 绑定无意义)."""
+    try:
+        return ipaddress.IPv4Address(ip).is_link_local
+    except Exception:
+        return ip.startswith("169.254.")
+
+
+def _all_local_addresses() -> list[str]:
+    """全部本机 IPv4 地址 (含链路本地/环回, 供内部自回环过滤使用)."""
+    ips: list[str] = []
     try:  # 连接外部地址后查本地出口 (UDP 无连接, 不会真正发包)
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
@@ -32,16 +40,33 @@ def scan_local_addresses() -> list[str]:
             ips.append(ip)
     except OSError:
         pass
-    for ip in _iface_infos():
-        if ip.address not in ips:
-            ips.append(ip.address)
+    for info in _iface_infos():
+        if info.address not in ips:
+            ips.append(info.address)
+    return ips
+
+
+def scan_local_addresses() -> list[str]:
+    """本机 IPv4 地址列表 (供绑定地址下拉框), 固定包含 0.0.0.0 与 127.0.0.1.
+
+    过滤链路本地地址 (169.254.*): 无实际路由意义, 出现在下拉框中只会干扰选择.
+    """
+    ips = ["0.0.0.0", "127.0.0.1"]
+    for ip in _all_local_addresses():
+        if ip not in ips and not _is_link_local(ip):
+            ips.append(ip)
     return ips
 
 
 def scan_broadcast_addresses() -> list[str]:
-    """各网卡的广播地址 (供广播地址下拉框), 如 192.168.10.255 / 127.255.255.255."""
+    """各网卡的广播地址 (供广播地址下拉框), 如 192.168.10.255 / 127.255.255.255.
+
+    跳过链路本地网卡 (169.254.*) 对应的广播地址.
+    """
     result = ["255.255.255.255"]
     for info in _iface_infos():
+        if _is_link_local(info.address):
+            continue
         bcast = info.broadcast
         if bcast and bcast not in result:
             result.append(bcast)
@@ -448,8 +473,9 @@ class _UdpGroupBase(DataSource):
         return self._sock.getsockname()[1] if self._sock else 0
 
     def _refresh_local_ips(self) -> None:
-        # 含 127.0.0.1: 广播/组播经环回口回来时来源IP是 127.0.0.1
-        self._local_ips = {ip for ip in scan_local_addresses() if ip != "0.0.0.0"}
+        # 含 127.0.0.1 与链路本地: 广播/组播经环回口回来时来源IP可能是它们
+        # (用未过滤全集, 与用户可见的扫描列表区分)
+        self._local_ips = {ip for ip in _all_local_addresses() if ip != "0.0.0.0"}
 
     def _self_ports(self) -> set[int]:
         """自滤端口集合: 这些本机端口发来的数据报视为自己发出的."""

@@ -159,8 +159,10 @@ print("TEST TCP服务端扇出/主要对端 PASS")
 # ---- 地址扫描 ------------------------------------------------------------
 ips = scan_local_addresses()
 assert "0.0.0.0" in ips and "127.0.0.1" in ips
+assert not any(i.startswith("169.254.") for i in ips), "扫描列表不应含链路本地地址"
 bcasts = scan_broadcast_addresses()
 assert "255.255.255.255" in bcasts
+assert not any(i.startswith("169.254.") for i in bcasts), "广播列表不应含链路本地网段"
 print("TEST 地址扫描 PASS:", ips, bcasts)
 
 print("ALL PASS")
