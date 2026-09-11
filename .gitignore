@@ -21,3 +21,4 @@ logs/
 *.log
 tests/data.bin
 tests/screenshot_*.png
+build_pyinstaller/

@@ -29,12 +29,12 @@ from .theme import SwitchToggle, toast, PlaceholderSpinBox
 from .util import fmt_rate
 
 
-def _row(label: str, *fields: QWidget, stretch_last=True) -> QWidget:
+def _row(label: str, *fields: QWidget, stretch_last=True, label_min_w: int = 60) -> QWidget:
     w = QWidget()
     h = QHBoxLayout(w)
     h.setContentsMargins(0, 0, 0, 0)
     lab = QLabel(label)
-    lab.setMinimumWidth(60)
+    lab.setMinimumWidth(label_min_w)
     h.addWidget(lab)
     for i, f in enumerate(fields):
         h.addWidget(f, 1 if (stretch_last and i == len(fields) - 1) else 0)
@@ -62,8 +62,9 @@ class SerialForm(QWidget):
         btn = QPushButton("刷新")
         btn.setMinimumWidth(72)
         btn.clicked.connect(self.refresh_ports)
-        lay.addWidget(_row("串   口:", _pair(self.port, btn)))
-        # 参数行复用 _row: 与"串口:"行相同的列宽/对齐, 标签列与输入框列都对齐
+        # 标签两端对齐: 2字词中间用全角空格 (串 口/校 验/流 控), 与3字词等宽;
+        # label_min_w 统一标签列宽, 保证标签列与输入框列都严格成列
+        lay.addWidget(_row("串　口:", _pair(self.port, btn), label_min_w=68))
         self.baud = QComboBox(); self.baud.setMinimumWidth(160); self.baud.setEditable(True)
         self.baud.addItems(["9600", "19200", "38400", "57600", "115200", "230400", "460800", "921600"])
         self.baud.setCurrentText("115200")
@@ -72,9 +73,9 @@ class SerialForm(QWidget):
         self.stop_bits = QComboBox(); self.stop_bits.addItems(["1", "2"])
         self.flow = QComboBox(); self.flow.addItems(["无", "RTS/CTS"])
         for lab, f in [("波特率:", self.baud), ("数据位:", self.data_bits),
-                       ("校   验:", self.parity), ("停止位:", self.stop_bits),
-                       ("流   控:", self.flow)]:
-            lay.addWidget(_row(lab, f))
+                       ("校　验:", self.parity), ("停止位:", self.stop_bits),
+                       ("流　控:", self.flow)]:
+            lay.addWidget(_row(lab, f, label_min_w=68))
         lay.addStretch(1)
         self.refresh_ports()
 

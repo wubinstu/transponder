@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..core import Bridge, LogSession, FileRecvSource, FileSendSource, SerialSource
+from .._version import get_version
 from .forms import SOURCE_TYPES
 from .source_panel import SourcePanel
 from .theme import SwitchToggle, apply_theme, toast, ASSET_DIR
@@ -141,7 +142,7 @@ class MainWindow(QMainWindow):
     def __init__(self, prefill=None):
         super().__init__()
         prefill = prefill or {}
-        self.setWindowTitle("MW数据转发器")
+        self.setWindowTitle(f"MW数据转发器 {get_version()}")
         self.setWindowIcon(QIcon(os.path.join(ASSET_DIR, "app-icon.svg")))
         self.resize(1180, 800)
         self._theme = "light" if 8 <= datetime.now().hour < 20 else "dark"
@@ -163,9 +164,9 @@ class MainWindow(QMainWindow):
         # 启动时按时间/系统版本应用默认主题和圆角风格
         apply_theme(self._theme, self._rounded)
 
-        # 标题栏: 标题 + 圆角风格 + 主题切换
+        # 标题栏: 标题(带版本号) + 圆角风格 + 主题切换
         head = QHBoxLayout()
-        title = QLabel("MW数据转发器")
+        title = QLabel(f"MW数据转发器  {get_version()}")
         title.setObjectName("title")
         head.addWidget(title)
         head.addStretch(1)

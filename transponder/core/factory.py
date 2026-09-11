@@ -66,6 +66,8 @@ def parse_spec(spec: str) -> DataSource:
             bytesize=int(_opt(kv, "data", "8")),
             parity=_PARITY[_opt(kv, "parity", "N").upper()],
             stopbits=int(_opt(kv, "stop", "1")),
+            flowctrl={"none": "无", "rtscts": "RTS/CTS"}.get(
+                _opt(kv, "flow", "none").lower(), "无"),
         )
     if stype == "file-send":
         rate = (int(_opt(kv, "b", "0")) + 1024 * int(_opt(kv, "kb", "0"))
